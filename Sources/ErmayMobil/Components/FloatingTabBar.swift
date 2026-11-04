@@ -41,113 +41,105 @@ public enum MainTab: Int, CaseIterable {
 public struct FloatingTabBar: View {
     @Binding public var selectedTab: MainTab
     @Namespace private var lensNamespace
+    @State private var isDragging: Bool = false
     
     public init(selectedTab: Binding<MainTab>) {
         self._selectedTab = selectedTab
     }
     
     public var body: some View {
-        HStack(spacing: 2) {
-            ForEach(MainTab.allCases, id: \.self) { tab in
-                let isSelected = selectedTab == tab
-                Button {
-                    #if canImport(UIKit)
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    #endif
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
-                        selectedTab = tab
-                    }
-                } label: {
-                    ZStack {
-                        // WhatsApp Aktif Oval Cam Mercek (Bulging Oval Lens with Chromatic Dispersion)
-                        if isSelected {
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(0.22),
-                                            Color.white.opacity(0.08)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
+        GeometryReader { proxy in
+            let totalTabs = CGFloat(MainTab.allCases.count)
+            let tabWidth = proxy.size.width / totalTabs
+            
+            HStack(spacing: 0) {
+                ForEach(MainTab.allCases, id: \.self) { tab in
+                    let isSelected = selectedTab == tab
+                    Button {
+                        selectTab(tab)
+                    } label: {
+                        ZStack {
+                            // WhatsApp Aktif Oval Cam Mercek (Saf Kristal Sıvı Cam - Çizgisiz)
+                            if isSelected {
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color.white.opacity(0.24),
+                                                Color.white.opacity(0.08)
+                                            ],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
                                     )
-                                )
-                                .frame(height: 52) // Bar sınırlarının dışına hafifçe taşan oval büyüteç
-                                .overlay(
-                                    // Prizmatik Speküler Kenar Çizgisi
-                                    Capsule()
-                                        .stroke(
-                                            LinearGradient(
-                                                colors: [
-                                                    Color.white.opacity(0.8),
-                                                    Color.white.opacity(0.2),
-                                                    Color.white.opacity(0.4)
-                                                ],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            ),
-                                            lineWidth: 1.2
-                                        )
-                                )
-                                .overlay(
-                                    // Üst Prizma Renk Kırılması (Gökkuşağı Caustic: Camgöbeği -> Zümrüt -> Amber -> Kırmızı)
-                                    VStack {
-                                        LinearGradient(
-                                            colors: [
-                                                Color(red: 0.0, green: 0.95, blue: 1.0, opacity: 0.95),
-                                                Color(red: 0.1, green: 1.0, blue: 0.5, opacity: 0.95),
-                                                Color(red: 1.0, green: 0.9, blue: 0.1, opacity: 0.95),
-                                                Color(red: 1.0, green: 0.25, blue: 0.35, opacity: 0.9)
-                                            ],
-                                            startPoint: .leading,
-                                            endPoint: .trailing
-                                        )
-                                        .frame(height: 2.5)
-                                        .cornerRadius(1.5)
-                                        .padding(.horizontal, 8)
-                                        .offset(y: -0.5)
-                                        
-                                        Spacer()
-                                        
-                                        // Alt Prizma Renk Kırılması
-                                        LinearGradient(
-                                            colors: [
-                                                Color(red: 1.0, green: 0.25, blue: 0.35, opacity: 0.85),
-                                                Color(red: 1.0, green: 0.85, blue: 0.1, opacity: 0.9),
-                                                Color(red: 0.1, green: 1.0, blue: 0.6, opacity: 0.9),
-                                                Color(red: 0.0, green: 0.8, blue: 1.0, opacity: 0.85)
-                                            ],
-                                            startPoint: .leading,
-                                            endPoint: .trailing
-                                        )
-                                        .frame(height: 2.0)
-                                        .cornerRadius(1)
-                                        .padding(.horizontal, 10)
-                                        .offset(y: 0.5)
-                                    }
-                                )
-                                .shadow(color: Color.black.opacity(0.4), radius: 8, x: 0, y: 4)
-                                .shadow(color: Color.white.opacity(0.15), radius: 6, x: 0, y: 0)
-                                .matchedGeometryEffect(id: "whatsappActiveTabLens", in: lensNamespace)
-                        }
-                        
-                        VStack(spacing: 3) {
-                            Image(systemName: isSelected ? tab.icon : tab.outlineIcon)
-                                .font(.system(size: isSelected ? 20 : 18, weight: isSelected ? .bold : .regular))
-                                .foregroundColor(isSelected ? .white : Color.white.opacity(0.65))
-                                .scaleEffect(isSelected ? 1.05 : 1.0)
+                                    .frame(height: 52) // Bar sınırlarının dışına hafifçe taşan oval büyüteç
+                                    .overlay(
+                                        // Prizmatik Speküler Kenar Çizgisi
+                                        Capsule()
+                                            .stroke(
+                                                LinearGradient(
+                                                    colors: [
+                                                        Color.white.opacity(0.85),
+                                                        Color.white.opacity(0.25),
+                                                        Color.white.opacity(0.4)
+                                                    ],
+                                                    startPoint: .topLeading,
+                                                    endPoint: .bottomTrailing
+                                                ),
+                                                lineWidth: 1.2
+                                            )
+                                    )
+                                    .shadow(color: Color.black.opacity(0.45), radius: 8, x: 0, y: 4)
+                                    .shadow(color: Color.white.opacity(0.12), radius: 6, x: 0, y: 0)
+                                    .scaleEffect(isDragging ? 1.08 : 1.0)
+                                    .animation(.spring(response: 0.25, dampingFraction: 0.65), value: isDragging)
+                                    .matchedGeometryEffect(id: "whatsappActiveTabLens", in: lensNamespace)
+                            }
                             
-                            Text(tab.title)
-                                .font(.system(size: 10, weight: isSelected ? .bold : .medium))
-                                .foregroundColor(isSelected ? .white : Color.white.opacity(0.65))
+                            VStack(spacing: 3) {
+                                Image(systemName: isSelected ? tab.icon : tab.outlineIcon)
+                                    .font(.system(size: isSelected ? 20 : 18, weight: isSelected ? .bold : .regular))
+                                    .foregroundColor(isSelected ? .white : Color.white.opacity(0.65))
+                                    .scaleEffect(isSelected ? (isDragging ? 1.12 : 1.05) : 1.0)
+                                    .animation(.spring(response: 0.25, dampingFraction: 0.68), value: isSelected)
+                                
+                                Text(tab.title)
+                                    .font(.system(size: 10, weight: isSelected ? .bold : .medium))
+                                    .foregroundColor(isSelected ? .white : Color.white.opacity(0.65))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
                     }
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .buttonStyle(PlainButtonStyle())
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !isDragging {
+                            isDragging = true
+                        }
+                        let clampedX = max(0, min(value.location.x, proxy.size.width - 1))
+                        let idx = Int(clampedX / tabWidth)
+                        let target = MainTab.allCases[max(0, min(idx, MainTab.allCases.count - 1))]
+                        if selectedTab != target {
+                            triggerHaptic()
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
+                                selectedTab = target
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.70)) {
+                            isDragging = false
+                        }
+                        triggerHaptic()
+                    }
+            )
         }
+        .frame(height: 52)
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .background(
@@ -178,5 +170,18 @@ public struct FloatingTabBar: View {
         )
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
+    }
+    
+    private func selectTab(_ tab: MainTab) {
+        triggerHaptic()
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) {
+            selectedTab = tab
+        }
+    }
+    
+    private func triggerHaptic() {
+        #if canImport(UIKit)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
     }
 }
