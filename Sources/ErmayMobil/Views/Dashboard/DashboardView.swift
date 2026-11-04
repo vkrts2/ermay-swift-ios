@@ -489,7 +489,7 @@ public struct DashboardView: View {
         )
     }
     
-    // MARK: - 3 Sekmeli Liste (Son İşlemler | Alacak Takibi | Borç Takibi)
+    // MARK: - 3 Sekmeli Liste (Apple Native Inset-Grouped Mimarisi)
     private func renderListSection() -> some View {
         let currentList: [DashboardListItem] = {
             switch activeTab {
@@ -499,15 +499,25 @@ public struct DashboardView: View {
             }
         }()
         
-        return VStack(alignment: .leading, spacing: 12) {
-            // Tab Buttons
-            HStack(spacing: 8) {
+        return VStack(alignment: .leading, spacing: 10) {
+            // Apple Inset Section Title
+            Text(activeTab == "receivables" ? "MÜŞTERİ ALACAK TAKİBİ" : (activeTab == "payables" ? "TEDARİKÇİ BORÇ TAKİBİ" : "SON TİCARİ HAREKETLER"))
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(Color(hex: "8E8E93"))
+                .padding(.horizontal, 4)
+            
+            // Apple Native Inset Segmented Picker
+            HStack(spacing: 2) {
                 tabButton(title: "Son İşlemler", key: "recents")
                 tabButton(title: "Alacak Takibi", key: "receivables")
                 tabButton(title: "Borç Takibi", key: "payables")
             }
+            .padding(2)
+            .background(Color(hex: "1C1C1E"))
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.08), lineWidth: 1))
             
-            // List Items
+            // Apple Inset-Grouped Card Container
             VStack(spacing: 0) {
                 if currentList.isEmpty {
                     Text("Kayıt bulunamadı.")
@@ -518,18 +528,18 @@ public struct DashboardView: View {
                 } else {
                     ForEach(Array(currentList.enumerated()), id: \.element.id) { index, item in
                         HStack(spacing: 12) {
-                            // Circle Icon Badge with G / Ç
+                            // Apple Squircle Icon (G / Ç)
                             ZStack {
-                                Circle()
-                                    .fill((item.type == "In" ? Color(hex: "00FF87") : Color(hex: "FF416C")).opacity(0.12))
-                                    .frame(width: 36, height: 36)
-                                Text(item.type == "In" ? "G" : "Ç")
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundColor(item.type == "In" ? Color(hex: "00FF87") : Color(hex: "FF416C"))
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill((item.type == "In" ? Color(hex: "30D158") : Color(hex: "FF453A")).opacity(0.16))
+                                    .frame(width: 32, height: 32)
+                                Image(systemName: item.type == "In" ? "arrow.down.left" : "arrow.up.right")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(item.type == "In" ? Color(hex: "30D158") : Color(hex: "FF453A"))
                             }
                             
                             // Title & Subtitle
-                            VStack(alignment: .leading, spacing: 3) {
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text(formatCariTitle(item.title))
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundColor(.white)
@@ -546,36 +556,42 @@ public struct DashboardView: View {
                             // Amount (+ / -)
                             Text("\(item.type == "In" ? "+" : "-")\(AppFormatters.money(item.amount))")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(item.type == "In" ? Color(hex: "00FF87") : Color(hex: "FF416C"))
+                                .foregroundColor(item.type == "In" ? Color(hex: "30D158") : Color(hex: "FF453A"))
                                 .lineLimit(1)
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(Color(hex: "636366"))
                         }
-                        .padding(.vertical, 12)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
                         
                         if index < currentList.count - 1 {
-                            Divider().background(Color.white.opacity(0.06))
+                            Divider()
+                                .background(Color.white.opacity(0.08))
+                                .padding(.leading, 56)
                         }
                     }
                 }
             }
+            .background(Color(hex: "1C1C1E"))
+            .cornerRadius(16)
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
         }
-        .padding(16)
-        .background(Color(hex: "121216"))
-        .cornerRadius(20)
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08), lineWidth: 1))
     }
     
     private func tabButton(title: String, key: String) -> some View {
         let isSelected = activeTab == key
         return Button {
-            withAnimation(.easeInOut(duration: 0.2)) { activeTab = key }
+            withAnimation(.easeInOut(duration: 0.15)) { activeTab = key }
         } label: {
             Text(title)
                 .font(.system(size: 12, weight: isSelected ? .bold : .medium))
                 .foregroundColor(isSelected ? .white : Color(hex: "8E8E93"))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 9)
-                .background(isSelected ? Color(hex: "2563EB") : Color.white.opacity(0.04))
-                .cornerRadius(10)
+                .padding(.vertical, 7)
+                .background(isSelected ? Color(hex: "3A3A3C") : Color.clear)
+                .cornerRadius(8)
         }
     }
 }
