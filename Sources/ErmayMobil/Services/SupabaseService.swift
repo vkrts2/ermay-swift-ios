@@ -182,9 +182,9 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             queryItems.append(URLQueryItem(name: "or", value: "(tenant_id.eq.\(tenantId),tenant_id.eq.default,tenant_id.is.null)"))
         }
 
-        // Soft-delete filtresi: Silinmiş kayıtları getirme
+        // Soft-delete filtresi: Silinmiş kayıtları getirme (neq.true hem false hem null olanları kapsar)
         if !filters.keys.contains("deleted_at") && !filters.keys.contains("is_deleted") {
-            queryItems.append(URLQueryItem(name: "is_deleted", value: "is.false"))
+            queryItems.append(URLQueryItem(name: "is_deleted", value: "neq.true"))
         }
         
         for (key, val) in filters {

@@ -293,16 +293,15 @@ public struct CariFormView: View {
                 }
             } catch {
                 await MainActor.run {
+                    self.errorMessage = "Kayıt Başarısız: \(error.localizedDescription)"
+                    self.isSaving = false
+                    // İnternet hatası durumunda yine de offline kuyruğa kaydet
                     OfflineQueueService.shared.enqueue(
                         action: cariToEdit == nil ? "INSERT" : "UPDATE",
                         table: "cariler",
                         recordId: saved.id,
                         payload: try? JSONEncoder().encode(saved)
                     )
-                    HardwareService.shared.hapticSuccess()
-                    onSave?(saved)
-                    isSaving = false
-                    dismiss()
                 }
             }
         }

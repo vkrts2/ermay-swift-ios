@@ -42,18 +42,23 @@ public struct CariKart: Identifiable, Codable, Hashable {
         case kod
         case unvan
         case cariTuru = "cari_turu"
+        case cariTipi = "cari_tipi"
         case yetkili
+        case yetkiliKisi = "yetkili_kisi"
         case grup
         case vergiDairesi = "vergi_dairesi"
         case vergiNo = "vergi_no"
         case tcKimlikNo = "tc_kimlik_no"
         case telefon
+        case telefon2
         case gsm
         case email
         case eposta
         case webSitesi = "web_sitesi"
+        case web
         case adres
         case sehir
+        case il
         case ilce
         case bakiye
         case bakiyeTuru = "bakiye_turu"
@@ -62,6 +67,7 @@ public struct CariKart: Identifiable, Codable, Hashable {
         case islemTarihi = "islem_tarihi"
         case olusturmaTarihi = "olusturma_tarihi"
         case aktif
+        case isActive = "is_active"
         case isDeleted = "is_deleted"
         case syncGuid = "sync_guid"
         case uuid
@@ -211,31 +217,25 @@ public struct CariKart: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(cariKodu, forKey: .cariKodu)
         try container.encodeIfPresent(cariKodu, forKey: .kod)
         try container.encode(unvan, forKey: .unvan)
-        try container.encodeIfPresent(cariTuru, forKey: .cariTuru)
+        try container.encodeIfPresent(cariTuru, forKey: .cariTipi)
         try container.encodeIfPresent(yetkili, forKey: .yetkili)
-        try container.encodeIfPresent(grup, forKey: .grup)
+        try container.encodeIfPresent(yetkili, forKey: .yetkiliKisi)
         try container.encodeIfPresent(vergiDairesi, forKey: .vergiDairesi)
         try container.encodeIfPresent(vergiNo, forKey: .vergiNo)
         try container.encodeIfPresent(tcKimlikNo, forKey: .tcKimlikNo)
         try container.encodeIfPresent(telefon, forKey: .telefon)
-        try container.encodeIfPresent(gsm, forKey: .gsm)
-        try container.encodeIfPresent(email, forKey: .email)
+        try container.encodeIfPresent(gsm ?? telefon, forKey: .telefon2)
         try container.encodeIfPresent(email, forKey: .eposta)
-        try container.encodeIfPresent(webSitesi, forKey: .webSitesi)
+        try container.encodeIfPresent(webSitesi, forKey: .web)
         try container.encodeIfPresent(adres, forKey: .adres)
-        try container.encodeIfPresent(sevkAdresi, forKey: .sevkAdresi)
         try container.encodeIfPresent(sehir, forKey: .sehir)
+        try container.encodeIfPresent(sehir, forKey: .il)
         try container.encodeIfPresent(ilce, forKey: .ilce)
         try container.encode(bakiye, forKey: .bakiye)
         try container.encodeIfPresent(bakiyeTuru, forKey: .bakiyeTuru)
         try container.encodeIfPresent(riskLimiti, forKey: .riskLimiti)
         try container.encodeIfPresent(vadeGunu, forKey: .vadeGunu)
-        try container.encodeIfPresent(odemePlani, forKey: .odemePlani)
-        try container.encodeIfPresent(ticaretSicilNo, forKey: .ticaretSicilNo)
-        try container.encodeIfPresent(iban, forKey: .iban)
-        try container.encodeIfPresent(islemTarihi, forKey: .islemTarihi)
-        try container.encodeIfPresent(olusturmaTarihi, forKey: .olusturmaTarihi)
-        try container.encode(aktif ?? true, forKey: .aktif)
+        try container.encode(aktif ?? true, forKey: .isActive)
         try container.encode(false, forKey: .isDeleted)
     }
 }
