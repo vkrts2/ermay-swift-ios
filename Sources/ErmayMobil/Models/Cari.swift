@@ -41,9 +41,6 @@ public struct CariKart: Identifiable, Codable, Hashable {
         case cariKodu = "cari_kodu"
         case kod
         case unvan
-        case cariTuru = "cari_turu"
-        case cariTipi = "cari_tipi"
-        case yetkili
         case yetkiliKisi = "yetkili_kisi"
         case grup
         case vergiDairesi = "vergi_dairesi"
@@ -55,27 +52,22 @@ public struct CariKart: Identifiable, Codable, Hashable {
         case email
         case eposta
         case webSitesi = "web_sitesi"
-        case web
         case adres
         case sehir
         case il
         case ilce
         case bakiye
         case bakiyeTuru = "bakiye_turu"
+        case krediLimiti = "kredi_limiti"
         case riskLimiti = "risk_limiti"
+        case vadeGun = "vade_gun"
         case vadeGunu = "vade_gunu"
-        case islemTarihi = "islem_tarihi"
-        case olusturmaTarihi = "olusturma_tarihi"
-        case aktif
+        case notlar
         case isActive = "is_active"
         case isDeleted = "is_deleted"
         case syncGuid = "sync_guid"
         case uuid
         case tenantId = "tenant_id"
-        case sevkAdresi = "sevk_adresi"
-        case odemePlani = "odeme_plani"
-        case ticaretSicilNo = "ticaret_sicil_no"
-        case iban
     }
     
     public init(
@@ -159,19 +151,19 @@ public struct CariKart: Identifiable, Codable, Hashable {
         // cari_kodu or kod
         self.cariKodu = (try? c.decode(String.self, forKey: .cariKodu)) ?? (try? c.decode(String.self, forKey: .kod))
         
-        self.cariTuru = try? c.decode(String.self, forKey: .cariTuru)
-        self.yetkili = try? c.decode(String.self, forKey: .yetkili)
-        self.grup = try? c.decode(String.self, forKey: .grup)
+        self.cariTuru = (try? c.decode(String.self, forKey: .grup)) ?? "Müşteri"
+        self.yetkili = try? c.decode(String.self, forKey: .yetkiliKisi)
+        self.grup = (try? c.decode(String.self, forKey: .grup)) ?? "Müşteri"
         self.vergiDairesi = try? c.decode(String.self, forKey: .vergiDairesi)
         self.vergiNo = try? c.decode(String.self, forKey: .vergiNo)
         self.tcKimlikNo = try? c.decode(String.self, forKey: .tcKimlikNo)
         self.telefon = try? c.decode(String.self, forKey: .telefon)
-        self.gsm = try? c.decode(String.self, forKey: .gsm)
+        self.gsm = (try? c.decode(String.self, forKey: .telefon2)) ?? (try? c.decode(String.self, forKey: .gsm))
         self.email = (try? c.decode(String.self, forKey: .email)) ?? (try? c.decode(String.self, forKey: .eposta))
         self.webSitesi = try? c.decode(String.self, forKey: .webSitesi)
         self.adres = try? c.decode(String.self, forKey: .adres)
-        self.sevkAdresi = try? c.decode(String.self, forKey: .sevkAdresi)
-        self.sehir = try? c.decode(String.self, forKey: .sehir)
+        self.sevkAdresi = nil
+        self.sehir = (try? c.decode(String.self, forKey: .sehir)) ?? (try? c.decode(String.self, forKey: .il))
         self.ilce = try? c.decode(String.self, forKey: .ilce)
         
         // bakiye
@@ -187,28 +179,28 @@ public struct CariKart: Identifiable, Codable, Hashable {
         
         self.bakiyeTuru = (try? c.decode(String.self, forKey: .bakiyeTuru)) ?? (self.bakiye >= 0 ? "A" : "B")
         
-        if let rVal = try? c.decode(Double.self, forKey: .riskLimiti) {
+        if let rVal = try? c.decode(Double.self, forKey: .krediLimiti) {
             self.riskLimiti = rVal
-        } else if let riVal = try? c.decode(Int.self, forKey: .riskLimiti) {
-            self.riskLimiti = Double(riVal)
+        } else if let rVal2 = try? c.decode(Double.self, forKey: .riskLimiti) {
+            self.riskLimiti = rVal2
         } else {
             self.riskLimiti = nil
         }
         
-        self.vadeGunu = try? c.decode(Int.self, forKey: .vadeGunu)
-        self.odemePlani = try? c.decode(String.self, forKey: .odemePlani)
-        self.ticaretSicilNo = try? c.decode(String.self, forKey: .ticaretSicilNo)
-        self.iban = try? c.decode(String.self, forKey: .iban)
-        self.islemTarihi = try? c.decode(String.self, forKey: .islemTarihi)
-        self.olusturmaTarihi = try? c.decode(String.self, forKey: .olusturmaTarihi)
-        self.aktif = try? c.decode(Bool.self, forKey: .aktif)
-        self.syncGuid = (try? c.decode(String.self, forKey: .syncGuid)) ?? (try? c.decode(String.self, forKey: .uuid))
+        self.vadeGunu = (try? c.decode(Int.self, forKey: .vadeGun)) ?? (try? c.decode(Int.self, forKey: .vadeGunu))
+        self.odemePlani = nil
+        self.ticaretSicilNo = nil
+        self.iban = nil
+        self.islemTarihi = nil
+        self.olusturmaTarihi = nil
+        self.aktif = (try? c.decode(Bool.self, forKey: .isActive)) ?? true
+        self.syncGuid = (try? c.decode(String.self, forKey: .uuid)) ?? (try? c.decode(String.self, forKey: .syncGuid))
         self.tenantId = try? c.decode(String.self, forKey: .tenantId)
     }
     
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        if let intId = Int(id) {
+        if let intId = Int(id), intId > 0 {
             try container.encode(intId, forKey: .id)
         }
         let finalUuid = syncGuid ?? (Int(id) == nil ? id : UUID().uuidString)
@@ -217,24 +209,28 @@ public struct CariKart: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(cariKodu, forKey: .cariKodu)
         try container.encodeIfPresent(cariKodu, forKey: .kod)
         try container.encode(unvan, forKey: .unvan)
-        try container.encodeIfPresent(cariTuru, forKey: .cariTipi)
-        try container.encodeIfPresent(yetkili, forKey: .yetkili)
+        try container.encode(grup ?? cariTuru ?? "Müşteri", forKey: .grup)
         try container.encodeIfPresent(yetkili, forKey: .yetkiliKisi)
         try container.encodeIfPresent(vergiDairesi, forKey: .vergiDairesi)
         try container.encodeIfPresent(vergiNo, forKey: .vergiNo)
         try container.encodeIfPresent(tcKimlikNo, forKey: .tcKimlikNo)
         try container.encodeIfPresent(telefon, forKey: .telefon)
         try container.encodeIfPresent(gsm ?? telefon, forKey: .telefon2)
+        try container.encodeIfPresent(email, forKey: .email)
         try container.encodeIfPresent(email, forKey: .eposta)
-        try container.encodeIfPresent(webSitesi, forKey: .web)
+        try container.encodeIfPresent(webSitesi, forKey: .webSitesi)
         try container.encodeIfPresent(adres, forKey: .adres)
         try container.encodeIfPresent(sehir, forKey: .sehir)
         try container.encodeIfPresent(sehir, forKey: .il)
         try container.encodeIfPresent(ilce, forKey: .ilce)
         try container.encode(bakiye, forKey: .bakiye)
-        try container.encodeIfPresent(bakiyeTuru, forKey: .bakiyeTuru)
-        try container.encodeIfPresent(riskLimiti, forKey: .riskLimiti)
-        try container.encodeIfPresent(vadeGunu, forKey: .vadeGunu)
+        try container.encode(bakiyeTuru ?? (bakiye >= 0 ? "A" : "B"), forKey: .bakiyeTuru)
+        if let r = riskLimiti {
+            try container.encode(r, forKey: .krediLimiti)
+        }
+        if let v = vadeGunu {
+            try container.encode(v, forKey: .vadeGun)
+        }
         try container.encode(aktif ?? true, forKey: .isActive)
         try container.encode(false, forKey: .isDeleted)
     }
