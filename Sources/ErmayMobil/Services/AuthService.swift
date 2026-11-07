@@ -41,39 +41,38 @@ public final class AuthService: ObservableObject {
         }
     }
     
-    // Masaüstü C# Rfc2898DeriveBytes (PBKDF2-SHA256, 10000 iterasyon) ile %100 uyumlu şifre doğrulama
+    // Masaüstü C# Rfc2898DeriveBytes (PBKDF2-SHA256, 100.000 iterasyon + eski 10.000 iterasyon uyumluluğu) ile %100 uyumlu şifre doğrulama
     private func verifyPassword(plain: String, storedHash: String, saltBase64: String?) -> Bool {
-        if plain == storedHash { return true }
-        
         if storedHash.starts(with: "PBKDF2$"), let saltBase64 = saltBase64, !saltBase64.isEmpty {
             guard let saltData = Data(base64Encoded: saltBase64),
                   let expectedHashData = Data(base64Encoded: storedHash.replacingOccurrences(of: "PBKDF2$", with: "")) else {
                 return false
             }
             
-            var derivedKey = Data(repeating: 0, count: 32)
             let passwordData = plain.data(using: .utf8) ?? Data()
-            
-            let status = derivedKey.withUnsafeMutableBytes { derivedKeyBytes in
-                saltData.withUnsafeBytes { saltBytes in
-                    passwordData.withUnsafeBytes { passwordBytes in
-                        CCKeyDerivationPBKDF(
-                            CCPBKDFAlgorithm(kCCPBKDF2),
-                            passwordBytes.baseAddress?.assumingMemoryBound(to: Int8.self),
-                            passwordData.count,
-                            saltBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                            saltData.count,
-                            CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
-                            10000,
-                            derivedKeyBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                            32
-                        )
+            for iterations: UInt32 in [100_000, 10_000] {
+                var derivedKey = Data(repeating: 0, count: 32)
+                let status = derivedKey.withUnsafeMutableBytes { derivedKeyBytes in
+                    saltData.withUnsafeBytes { saltBytes in
+                        passwordData.withUnsafeBytes { passwordBytes in
+                            CCKeyDerivationPBKDF(
+                                CCPBKDFAlgorithm(kCCPBKDF2),
+                                passwordBytes.baseAddress?.assumingMemoryBound(to: Int8.self),
+                                passwordData.count,
+                                saltBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                                saltData.count,
+                                CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                                iterations,
+                                derivedKeyBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                                32
+                            )
+                        }
                     }
                 }
-            }
-            
-            if status == kCCSuccess && derivedKey == expectedHashData {
-                return true
+                
+                if status == kCCSuccess && derivedKey == expectedHashData {
+                    return true
+                }
             }
         }
         
@@ -109,33 +108,41 @@ public final class AuthService: ObservableObject {
             struct SysNote: Decodable {
                 let id: Int?
                 let baslik: String?
+                let title: String?
                 let icerik: String?
+                let content: String?
             }
             let notes: [SysNote] = try await SupabaseService.shared.fetch(
                 from: "notlar",
-                filters: ["baslik": "eq.__SYS_USERS__"],
+                filters: ["or": "(id.eq.999999,baslik.eq.__SYS_USERS__,title.eq.__SYS_USERS__)"],
                 applyTenantFilter: false
             )
             
-            if let note = notes.first, let jsonStr = note.icerik, let data = jsonStr.data(using: .utf8) {
+            for note in notes {
+                guard let jsonStr = note.icerik ?? note.content, let data = jsonStr.data(using: .utf8) else { continue }
                 if let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                     for uDict in jsonArray {
-                        let uName = (uDict["username"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-                        let uPass = uDict["password"] as? String ?? ""
-                        let uSalt = uDict["password_salt"] as? String
-                        let uEmail = uDict["email"] as? String ?? "\(cleanUsername)@ermay.local"
-                        let uRole = (uDict["role"] as? String) ?? "Admin"
+                        let rawName = (uDict["username"] as? String) ?? (uDict["Username"] as? String) ?? ""
+                        let uName = rawName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        let uPass = (uDict["password"] as? String) ?? (uDict["Password"] as? String) ?? (uDict["password_hash"] as? String) ?? ""
+                        let uSalt = (uDict["password_salt"] as? String) ?? (uDict["PasswordSalt"] as? String)
+                        let uEmail = (uDict["email"] as? String) ?? (uDict["Email"] as? String) ?? "\(cleanUsername)@ermay.local"
+                        let uRole = (uDict["role"] as? String) ?? (uDict["Role"] as? String) ?? "Admin"
                         
                         // Kullanıcının masaüstünde belirlenmiş gerçek tenant kimliği
-                        var resolvedTenant = (uDict["tenant_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        if resolvedTenant.isEmpty || resolvedTenant == "default" {
-                            resolvedTenant = "tenant_vkrts1992_gmail_com"
+                        let rawTenant = (uDict["tenant_id"] as? String) ?? (uDict["TenantId"] as? String) ?? ""
+                        var resolvedTenant = rawTenant.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let requestedTenant = tenantId.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !requestedTenant.isEmpty && requestedTenant != "default" {
+                            resolvedTenant = requestedTenant
+                        } else if resolvedTenant.isEmpty || resolvedTenant == "default" {
+                            resolvedTenant = "tenant_ermay_master"
                         }
                         
-                        if uName == cleanUsername {
+                        if uName == cleanUsername && !uPass.isEmpty && uPass.lowercased() != "temporary" {
                             if verifyPassword(plain: cleanPass, storedHash: uPass, saltBase64: uSalt) || cleanPass == uPass {
                                 let user = User(
-                                    id: String(describing: uDict["id"] ?? "1"),
+                                    id: String(describing: uDict["id"] ?? uDict["Id"] ?? "1"),
                                     email: uEmail,
                                     username: cleanUsername,
                                     fullName: cleanUsername.capitalized,
@@ -178,12 +185,16 @@ public final class AuthService: ObservableObject {
                 applyTenantFilter: false
             )
             
-            if let matched = users.first {
+            for matched in users {
                 let storedHash = matched.password_hash ?? ""
+                if storedHash.isEmpty || storedHash.lowercased() == "temporary" { continue }
                 let storedSalt = matched.password_salt
-                var resolvedTenant = matched.tenant_id ?? ""
-                if resolvedTenant.isEmpty || resolvedTenant == "default" {
-                    resolvedTenant = "tenant_vkrts1992_gmail_com"
+                let requestedTenant = tenantId.trimmingCharacters(in: .whitespacesAndNewlines)
+                var resolvedTenant = (matched.tenant_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !requestedTenant.isEmpty && requestedTenant != "default" {
+                    resolvedTenant = requestedTenant
+                } else if resolvedTenant.isEmpty || resolvedTenant == "default" {
+                    resolvedTenant = "tenant_ermay_master"
                 }
                 
                 if verifyPassword(plain: cleanPass, storedHash: storedHash, saltBase64: storedSalt) || cleanPass == storedHash {

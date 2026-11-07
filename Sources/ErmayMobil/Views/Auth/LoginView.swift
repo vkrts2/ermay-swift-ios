@@ -2,12 +2,16 @@ import SwiftUI
 
 public struct LoginView: View {
     @ObservedObject var authService = AuthService.shared
+    @ObservedObject var supabaseService = SupabaseService.shared
     
-    @State private var username: String = "vkrts"
-    @State private var pass: String = "2013110034"
+    @State private var username: String = ""
+    @State private var pass: String = ""
     @State private var rememberMe: Bool = true
-    @State private var tenantId: String = "tenant_ermay_master"
+    @State private var tenantId: String = SupabaseService.shared.tenantId
+    @State private var supabaseUrl: String = SupabaseService.shared.baseUrl
+    @State private var supabaseKey: String = SupabaseService.shared.anonKey
     @State private var showAdvancedTenant: Bool = false
+    @State private var showSupabaseSetupSheet: Bool = false
     
     public init() {}
     
@@ -160,14 +164,20 @@ public struct LoginView: View {
             }
         }
         .onAppear {
+            self.supabaseUrl = supabaseService.baseUrl
+            self.supabaseKey = supabaseService.anonKey
+            self.tenantId = supabaseService.tenantId
             if let saved = UserDefaults.standard.string(forKey: "saved_login_username"), !saved.isEmpty {
                 self.username = saved
-            } else {
-                self.username = "admin"
             }
-            if self.pass.isEmpty {
-                self.pass = "admin"
-            }
+        }
+        .sheet(isPresented: $showSupabaseSetupSheet) {
+            SupabaseSetupView(onComplete: {
+                self.supabaseUrl = supabaseService.baseUrl
+                self.supabaseKey = supabaseService.anonKey
+                self.tenantId = supabaseService.tenantId
+                self.showSupabaseSetupSheet = false
+            })
         }
     }
     
@@ -240,8 +250,26 @@ public struct LoginView: View {
             }
             
             if showAdvancedTenant {
-                HStack {
-                    TextField("Şirket Kodu (tenant_...)", text: $tenantId)
+                VStack(spacing: 8) {
+                    TextField("Şirket Kodu (tenant_ermay_master)", text: $tenantId)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .padding(8)
+                        .background(Color.white.opacity(0.04))
+                        .cornerRadius(6)
+                    
+                    TextField("Supabase Proje URL (https://...supabase.co)", text: $supabaseUrl)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .padding(8)
+                        .background(Color.white.opacity(0.04))
+                        .cornerRadius(6)
+                    
+                    SecureField("Supabase Anon Key", text: $supabaseKey)
                         .font(.system(size: 12))
                         .foregroundColor(.white)
                         .padding(8)
@@ -250,11 +278,28 @@ public struct LoginView: View {
                 }
                 .padding(.top, 4)
             }
+            Button {
+                showSupabaseSetupSheet = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 11))
+                    Text("Supabase Bağlantı Ayarlarını Değiştir")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(Color(hex: "60A5FA"))
+                .padding(.top, 4)
+            }
         }
         .padding(.top, 8)
     }
     
     private func handleLogin() {
+        SupabaseService.shared.updateConfiguration(
+            baseUrl: supabaseUrl,
+            anonKey: supabaseKey,
+            tenantId: tenantId
+        )
         if rememberMe {
             UserDefaults.standard.set(username, forKey: "saved_login_username")
         } else {

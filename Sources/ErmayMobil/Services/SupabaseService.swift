@@ -1,12 +1,21 @@
 import Foundation
+import Combine
+import KeychainAccess
 
-public final class SupabaseService: @unchecked Sendable {
+public final class SupabaseService: ObservableObject, @unchecked Sendable {
     public static let shared = SupabaseService()
     
-    public var baseUrl: String = "https://fqgbdymffknglqeqoogt.supabase.co"
-    public var anonKey: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxZ2JkeW1mZmtuZ2xxZXFvb2d0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1ODUzMDEsImV4cCI6MjEwNTE2MTMwMX0.pBeE2ivWpbkAd8KSN1y2pXNZPIr_1mGMLXXHYPzjTDg"
-    public var tenantId: String = "tenant_ermay_master"
+    public static let defaultBaseUrl = ""
+    public static let defaultAnonKey = ""
+    
+    @Published public var baseUrl: String = SupabaseService.defaultBaseUrl
+    @Published public var anonKey: String = SupabaseService.defaultAnonKey
+    @Published public var tenantId: String = "tenant_ermay_master"
+    @Published public var isConfigured: Bool = false
     public var authToken: String? = nil
+    
+    private let keychain = Keychain(service: "com.ermay.muhasebe").accessibility(.afterFirstUnlock)
+    private let keychainAnonKey = "supabase_secure_anon_key"
     
     private let session: URLSession
     private let decoder: JSONDecoder
@@ -20,6 +29,126 @@ public final class SupabaseService: @unchecked Sendable {
         
         self.decoder = JSONDecoder()
         self.encoder = JSONEncoder()
+        
+        if let savedUrl = UserDefaults.standard.string(forKey: "supabase_base_url")?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !savedUrl.isEmpty {
+            self.baseUrl = savedUrl.hasSuffix("/") ? String(savedUrl.dropLast()) : savedUrl
+        }
+        if let secureKey = try? keychain.getString(keychainAnonKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !secureKey.isEmpty {
+            self.anonKey = secureKey
+        } else if let legacyKey = UserDefaults.standard.string(forKey: "supabase_anon_key")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !legacyKey.isEmpty {
+            self.anonKey = legacyKey
+            try? keychain.set(legacyKey, key: keychainAnonKey)
+            UserDefaults.standard.removeObject(forKey: "supabase_anon_key")
+        }
+        if let savedTenant = UserDefaults.standard.string(forKey: "supabase_tenant_id")?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !savedTenant.isEmpty {
+            self.tenantId = savedTenant
+        }
+        self.isConfigured = !self.baseUrl.isEmpty && !self.anonKey.isEmpty
+    }
+    
+    public func updateConfiguration(baseUrl: String, anonKey: String, tenantId: String? = nil) {
+        let cleanUrl = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanKey = anonKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanUrl.isEmpty {
+            self.baseUrl = cleanUrl.hasSuffix("/") ? String(cleanUrl.dropLast()) : cleanUrl
+            UserDefaults.standard.set(self.baseUrl, forKey: "supabase_base_url")
+        }
+        if !cleanKey.isEmpty {
+            self.anonKey = cleanKey
+            try? keychain.set(self.anonKey, key: keychainAnonKey)
+            UserDefaults.standard.removeObject(forKey: "supabase_anon_key")
+        }
+        if let t = tenantId?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+            self.tenantId = t
+            UserDefaults.standard.set(self.tenantId, forKey: "supabase_tenant_id")
+        }
+        let configured = !self.baseUrl.isEmpty && !self.anonKey.isEmpty
+        DispatchQueue.main.async {
+            self.isConfigured = configured
+        }
+    }
+
+    public func clearConfiguration() {
+        UserDefaults.standard.removeObject(forKey: "supabase_base_url")
+        UserDefaults.standard.removeObject(forKey: "supabase_anon_key")
+        try? keychain.remove(keychainAnonKey)
+        DispatchQueue.main.async {
+            self.baseUrl = ""
+            self.anonKey = ""
+            self.isConfigured = false
+        }
+    }
+
+    public func testConnection(testUrl: String, testKey: String) async -> (Bool, String) {
+        let cleanUrl = testUrl.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+        let cleanKey = testKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanUrl.isEmpty, !cleanKey.isEmpty, let url = URL(string: "\(cleanUrl)/rest/v1/kullanicilar?select=id&limit=1") else {
+            return (false, "Geçersiz Supabase URL formatı.")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue(cleanKey, forHTTPHeaderField: "apikey")
+        req.setValue("Bearer \(cleanKey)", forHTTPHeaderField: "Authorization")
+        do {
+            let (_, response) = try await session.data(for: req)
+            if let http = response as? HTTPURLResponse {
+                if (200...299).contains(http.statusCode) {
+                    return (true, "Supabase bağlantısı doğrulandı.")
+                } else if http.statusCode == 401 || http.statusCode == 403 {
+                    return (false, "Supabase Anon Key geçersiz veya yetkisiz (HTTP \(http.statusCode)).")
+                } else if http.statusCode == 404 {
+                    return (true, "Supabase sunucusuna ulaşıldı.")
+                }
+                return (false, "Sunucu yanıt kodu: HTTP \(http.statusCode)")
+            }
+            return (false, "Sunucudan geçerli yanıt alınamadı.")
+        } catch {
+            return (false, "Bağlantı hatası: \(error.localizedDescription)")
+        }
+    }
+
+    public func resolveFromAccessToken(accessToken: String) async throws -> (url: String, anonKey: String) {
+        let cleanToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanToken.isEmpty, let projectsUrl = URL(string: "https://api.supabase.com/v1/projects") else {
+            throw NSError(domain: "SupabaseSetup", code: 400, userInfo: [NSLocalizedDescriptionKey: "Geçersiz Access Token."])
+        }
+        var projReq = URLRequest(url: projectsUrl)
+        projReq.httpMethod = "GET"
+        projReq.setValue("Bearer \(cleanToken)", forHTTPHeaderField: "Authorization")
+        let (projData, projResp) = try await session.data(for: projReq)
+        guard let httpProj = projResp as? HTTPURLResponse, (200...299).contains(httpProj.statusCode),
+              let projArray = try JSONSerialization.jsonObject(with: projData) as? [[String: Any]],
+              let firstProj = projArray.first,
+              let ref = firstProj["id"] as? String, !ref.isEmpty else {
+            throw NSError(domain: "SupabaseSetup", code: 404, userInfo: [NSLocalizedDescriptionKey: "Supabase hesabınızda aktif proje bulunamadı veya Access Token geçersiz."])
+        }
+        guard let keysUrl = URL(string: "https://api.supabase.com/v1/projects/\(ref)/api-keys") else {
+            throw NSError(domain: "SupabaseSetup", code: 400, userInfo: [NSLocalizedDescriptionKey: "API anahtarı adresi oluşturulamadı."])
+        }
+        var keysReq = URLRequest(url: keysUrl)
+        keysReq.httpMethod = "GET"
+        keysReq.setValue("Bearer \(cleanToken)", forHTTPHeaderField: "Authorization")
+        let (keysData, keysResp) = try await session.data(for: keysReq)
+        guard let httpKeys = keysResp as? HTTPURLResponse, (200...299).contains(httpKeys.statusCode),
+              let keysArray = try JSONSerialization.jsonObject(with: keysData) as? [[String: Any]] else {
+            throw NSError(domain: "SupabaseSetup", code: 404, userInfo: [NSLocalizedDescriptionKey: "Proje API anahtarları alınamadı."])
+        }
+        var foundAnonKey = ""
+        for item in keysArray {
+            if let name = item["name"] as? String, name == "anon",
+               let apiKey = item["api_key"] as? String, !apiKey.isEmpty {
+                foundAnonKey = apiKey
+                break
+            }
+        }
+        guard !foundAnonKey.isEmpty else {
+            throw NSError(domain: "SupabaseSetup", code: 404, userInfo: [NSLocalizedDescriptionKey: "Projede anon key bulunamadı."])
+        }
+        return (url: "https://\(ref).supabase.co", anonKey: foundAnonKey)
     }
     
     private func defaultHeaders(prefer: String? = nil) -> [String: String] {
@@ -55,7 +184,7 @@ public final class SupabaseService: @unchecked Sendable {
 
         // Soft-delete filtresi: Silinmiş kayıtları getirme
         if !filters.keys.contains("deleted_at") && !filters.keys.contains("is_deleted") {
-            queryItems.append(URLQueryItem(name: "deleted_at", value: "is.null"))
+            queryItems.append(URLQueryItem(name: "is_deleted", value: "is.false"))
         }
         
         for (key, val) in filters {
