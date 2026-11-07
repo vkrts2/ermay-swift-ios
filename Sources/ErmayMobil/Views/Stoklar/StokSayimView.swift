@@ -173,16 +173,24 @@ public struct StokSayimView: View {
                     let fark = sayilan - s.mevcutMiktar
                     if fark != 0 {
                         // Stok hareketi fişi oluştur (Sayım Düzeltmesi)
-                        let hareket = [
-                            "stok_id": stokId,
+                        var hareket: [String: Any] = [
+                            "uuid": UUID().uuidString,
+                            "tenant_id": SupabaseService.shared.tenantId,
                             "stok_adi": s.stokAdi,
                             "tarih": bugun,
                             "islem_turu": fark > 0 ? "SAYIM_FAZLASI" : "SAYIM_EKSIGI",
-                            "miktar": "\(abs(fark))",
-                            "aciklama": "Mobil Hızlı Stok Sayım Düzeltmesi"
+                            "hareket_turu": fark > 0 ? "Giriş" : "Çıkış",
+                            "giren": fark > 0 ? abs(fark) : 0.0,
+                            "cikan": fark < 0 ? abs(fark) : 0.0,
+                            "miktar": abs(fark),
+                            "aciklama": "Mobil Hızlı Stok Sayım Düzeltmesi",
+                            "is_deleted": false
                         ]
+                        if let intStokId = Int(stokId) {
+                            hareket["stok_id"] = intStokId
+                        }
                         if let hData = try? JSONSerialization.data(withJSONObject: hareket) {
-                            try? await SupabaseService.shared.insertRaw(into: "stok_hareketleri", data: hData)
+                            try? await SupabaseService.shared.insertRaw(into: "stok_hareketler", data: hData)
                         }
                     }
                     // Stok kartı mevcut miktarını güncelle

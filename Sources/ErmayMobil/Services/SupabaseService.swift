@@ -296,7 +296,8 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
     
     // MARK: - PostgREST Raw Update
     public func updateRaw(table: String, id: String, data: Data) async throws {
-        guard let url = URL(string: "\(baseUrl)/rest/v1/\(table)?id=eq.\(id)") else {
+        let filter = Int(id) != nil ? "id=eq.\(id)" : "uuid=eq.\(id)"
+        guard let url = URL(string: "\(baseUrl)/rest/v1/\(table)?\(filter)") else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
@@ -312,7 +313,8 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
     
     // MARK: - PostgREST Update
     public func update<T: Encodable>(table: String, id: String, item: T) async throws {
-        guard let url = URL(string: "\(baseUrl)/rest/v1/\(table)?id=eq.\(id)") else {
+        let filter = Int(id) != nil ? "id=eq.\(id)" : "uuid=eq.\(id)"
+        guard let url = URL(string: "\(baseUrl)/rest/v1/\(table)?\(filter)") else {
             throw URLError(.badURL)
         }
         

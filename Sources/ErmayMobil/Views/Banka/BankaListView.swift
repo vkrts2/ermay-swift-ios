@@ -298,7 +298,24 @@ struct EftGonderimView: View {
                             )
                             onEftComplete(h)
                             Task {
-                                try? await SupabaseService.shared.insertRaw(into: "banka_hareketleri", data: (try? JSONEncoder().encode(h)) ?? Data())
+                                let payload: [String: Any] = [
+                                    "uuid": UUID().uuidString,
+                                    "tenant_id": SupabaseService.shared.tenantId,
+                                    "tarih": AppFormatters.isoDate.string(from: Date()),
+                                    "islem_turu": "EFT / Havale",
+                                    "hareket_turu": "Ödeme",
+                                    "giren": 0.0,
+                                    "cikan": tutarNum,
+                                    "ceken": tutarNum,
+                                    "cari_unvan": aliciUnvan,
+                                    "evrak_no": "EFT-\(Int.random(in: 100...999))",
+                                    "tutar": tutarNum,
+                                    "aciklama": aciklama.isEmpty ? "Mobil EFT/Havale Gönderimi: \(aliciIban)" : aciklama,
+                                    "is_deleted": false
+                                ]
+                                if let bData = try? JSONSerialization.data(withJSONObject: payload) {
+                                    try? await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bData)
+                                }
                             }
                             dismiss()
                         }

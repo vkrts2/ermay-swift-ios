@@ -151,19 +151,87 @@ public struct TahsilatFormView: View {
     private func handleSave() {
         guard let tutar = Double(tutarStr.replacingOccurrences(of: ",", with: ".")), tutar > 0 else { return }
         isSaving = true
+        let docNo = isTahsilat ? "THS-\(Int.random(in: 100...999))" : "TED-\(Int.random(in: 100...999))"
+        let desc = aciklama.isEmpty ? (isTahsilat ? "Tahsilat İşlemi" : "Ödeme İşlemi") : aciklama
+        let dateStr = AppFormatters.isoDate.string(from: tarih)
+        
         let h = KasaHareket(
             id: UUID().uuidString,
             hesapId: hesapId,
-            tarih: AppFormatters.isoDate.string(from: tarih),
+            tarih: dateStr,
             islemTuru: isTahsilat ? "Tahsilat" : "Ödeme",
             cariId: cariId,
             cariUnvan: cariUnvan.isEmpty ? nil : cariUnvan,
-            belgeNo: isTahsilat ? "THS-\(Int.random(in: 100...999))" : "TED-\(Int.random(in: 100...999))",
+            belgeNo: docNo,
             tutar: tutar,
-            aciklama: aciklama.isEmpty ? (isTahsilat ? "Tahsilat İşlemi" : "Ödeme İşlemi") : aciklama
+            aciklama: desc
         )
-        onSave?(h)
-        dismiss()
+        
+        Task {
+            do {
+                // 1. Kasa Hareketi Ekle
+                var kasaPayload: [String: Any] = [
+                    "uuid": UUID().uuidString,
+                    "tenant_id": SupabaseService.shared.tenantId,
+                    "tarih": dateStr,
+                    "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                    "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                    "giren": isTahsilat ? tutar : 0.0,
+                    "cikan": isTahsilat ? 0.0 : tutar,
+                    "gelir": isTahsilat ? tutar : 0.0,
+                    "gider": isTahsilat ? 0.0 : tutar,
+                    "evrak_no": docNo,
+                    "tutar": tutar,
+                    "aciklama": desc,
+                    "is_deleted": false
+                ]
+                if let cid = cariId, let intCid = Int(cid) {
+                    kasaPayload["cari_id"] = intCid
+                }
+                if !cariUnvan.isEmpty {
+                    kasaPayload["cari_unvan"] = cariUnvan
+                }
+                let kData = try JSONSerialization.data(withJSONObject: kasaPayload)
+                try await SupabaseService.shared.insertRaw(into: "kasa_hareketler", data: kData)
+                
+                // 2. Eğer Cari seçildiyse Cari Hareketi de ekle
+                if let cid = cariId, !cid.isEmpty {
+                    var cariPayload: [String: Any] = [
+                        "uuid": UUID().uuidString,
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "cari_unvan": cariUnvan,
+                        "evrak_no": docNo,
+                        "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "odeme_sekli": "Nakit",
+                        "aciklama": desc,
+                        "borc": isTahsilat ? 0.0 : tutar,
+                        "alacak": isTahsilat ? tutar : 0.0,
+                        "tarih": dateStr,
+                        "is_deleted": false
+                    ]
+                    if let intCid = Int(cid) {
+                        cariPayload["cari_id"] = intCid
+                    }
+                    let cData = try JSONSerialization.data(withJSONObject: cariPayload)
+                    try await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: cData)
+                }
+                
+                await MainActor.run {
+                    HardwareService.shared.hapticSuccess()
+                    onSave?(h)
+                    isSaving = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    HardwareService.shared.hapticSuccess()
+                    onSave?(h)
+                    isSaving = false
+                    dismiss()
+                }
+            }
+        }
     }
 }
 

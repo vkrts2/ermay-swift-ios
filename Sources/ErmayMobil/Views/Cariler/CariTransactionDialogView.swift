@@ -491,9 +491,106 @@ public struct CariTransactionDialogView: View {
         updated.bakiye = abs(newNet)
         updated.bakiyeTuru = newNet >= 0 ? "A" : "B"
         
-        onSave?(hareket, updated)
-        isSaving = false
-        dismiss()
+        Task {
+            do {
+                // 1. Cari Hareketi Supabase'e ekle
+                var hareketPayload: [String: Any] = [
+                    "uuid": UUID().uuidString,
+                    "tenant_id": SupabaseService.shared.tenantId,
+                    "cari_unvan": initialCari.unvan,
+                    "evrak_no": docNo,
+                    "islem_turu": isTahsilat ? "Tahsilat" : (isOdeme ? "Ödeme" : "Dekont"),
+                    "hareket_turu": isTahsilat ? "Tahsilat" : (isOdeme ? "Ödeme" : "Dekont"),
+                    "odeme_sekli": method,
+                    "aciklama": desc,
+                    "borc": borcTutar,
+                    "alacak": alacakTutar,
+                    "bakiye": updated.bakiye,
+                    "tarih": dateStr,
+                    "is_deleted": false
+                ]
+                if let intCariId = Int(initialCari.id) {
+                    hareketPayload["cari_id"] = intCariId
+                }
+                if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
+                    hareketPayload["cari_uuid"] = cUuid
+                }
+                let hData = try JSONSerialization.data(withJSONObject: hareketPayload)
+                try await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: hData)
+                
+                // 2. Carinin yeni bakiyesini Supabase'de güncelle
+                if let intCariId = Int(initialCari.id) {
+                    let bakiyePayload: [String: Any] = [
+                        "bakiye": updated.bakiye,
+                        "bakiye_turu": updated.bakiyeTuru ?? "A"
+                    ]
+                    let bData = try JSONSerialization.data(withJSONObject: bakiyePayload)
+                    try? await SupabaseService.shared.updateRaw(table: "cariler", id: "\(intCariId)", data: bData)
+                }
+                
+                // 3. Kasa veya Banka hareketini kaydet
+                if method.localizedCaseInsensitiveContains("banka") || method.localizedCaseInsensitiveContains("havale") || method.localizedCaseInsensitiveContains("eft") {
+                    let bankaPayload: [String: Any] = [
+                        "uuid": UUID().uuidString,
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "cari_unvan": initialCari.unvan,
+                        "evrak_no": docNo,
+                        "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "giren": isTahsilat ? amount : 0.0,
+                        "cikan": isOdeme ? amount : 0.0,
+                        "yatan": isTahsilat ? amount : 0.0,
+                        "ceken": isOdeme ? amount : 0.0,
+                        "tutar": amount,
+                        "aciklama": desc,
+                        "tarih": dateStr,
+                        "is_deleted": false
+                    ]
+                    if let intCariId = Int(initialCari.id) {
+                        var bp = bankaPayload
+                        bp["cari_id"] = intCariId
+                        let bpData = try JSONSerialization.data(withJSONObject: bp)
+                        try? await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bpData)
+                    }
+                } else {
+                    var kasaPayload: [String: Any] = [
+                        "uuid": UUID().uuidString,
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "cari_unvan": initialCari.unvan,
+                        "evrak_no": docNo,
+                        "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "giren": isTahsilat ? amount : 0.0,
+                        "cikan": isOdeme ? amount : 0.0,
+                        "gelir": isTahsilat ? amount : 0.0,
+                        "gider": isOdeme ? amount : 0.0,
+                        "tutar": amount,
+                        "aciklama": desc,
+                        "tarih": dateStr,
+                        "is_deleted": false
+                    ]
+                    if let intCariId = Int(initialCari.id) {
+                        kasaPayload["cari_id"] = intCariId
+                    }
+                    let kpData = try JSONSerialization.data(withJSONObject: kasaPayload)
+                    try? await SupabaseService.shared.insertRaw(into: "kasa_hareketler", data: kpData)
+                }
+                
+                await MainActor.run {
+                    HardwareService.shared.hapticSuccess()
+                    onSave?(hareket, updated)
+                    isSaving = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    HardwareService.shared.hapticSuccess()
+                    onSave?(hareket, updated)
+                    isSaving = false
+                    dismiss()
+                }
+            }
+        }
     }
 }
 

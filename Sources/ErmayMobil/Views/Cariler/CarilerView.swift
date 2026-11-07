@@ -259,6 +259,10 @@ public struct CarilerView: View {
                     } else {
                         cariler.insert(saved, at: 0)
                     }
+                    Task {
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        await loadLiveCariler()
+                    }
                 }
             }
             .onAppear {

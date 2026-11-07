@@ -171,11 +171,18 @@ public struct StokKart: Identifiable, Codable, Hashable {
     
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
+        if let intId = Int(id) {
+            try container.encode(intId, forKey: .id)
+        }
+        let finalUuid = syncGuid ?? (Int(id) == nil ? id : UUID().uuidString)
+        try container.encode(finalUuid, forKey: .uuid)
+        try container.encode(tenantId ?? SupabaseService.shared.tenantId, forKey: .tenantId)
         try container.encodeIfPresent(stokKodu, forKey: .stokKodu)
+        try container.encodeIfPresent(stokKodu, forKey: .kod)
         try container.encode(stokAdi, forKey: .stokAdi)
         try container.encodeIfPresent(barkod, forKey: .barkod)
         try container.encodeIfPresent(grupAdi, forKey: .grupAdi)
+        try container.encodeIfPresent(grupAdi, forKey: .kategori)
         try container.encodeIfPresent(birim, forKey: .birim)
         try container.encode(alisFiyati, forKey: .alisFiyati)
         try container.encode(satisFiyati, forKey: .satisFiyati)
@@ -183,9 +190,9 @@ public struct StokKart: Identifiable, Codable, Hashable {
         try container.encode(mevcutMiktar, forKey: .mevcutMiktar)
         try container.encodeIfPresent(kritikMiktar, forKey: .kritikMiktar)
         try container.encodeIfPresent(aciklama, forKey: .aciklama)
-        try container.encodeIfPresent(aktif, forKey: .aktif)
-        try container.encodeIfPresent(syncGuid, forKey: .syncGuid)
-        try container.encodeIfPresent(tenantId, forKey: .tenantId)
+        try container.encode(aktif ?? true, forKey: .aktif)
+        try container.encode(aktif ?? true, forKey: .isActive)
+        try container.encode(false, forKey: .isDeleted)
     }
 }
 

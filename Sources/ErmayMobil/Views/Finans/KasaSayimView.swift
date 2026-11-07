@@ -192,8 +192,24 @@ public struct KasaSayimView: View {
         )
         
         Task {
-            if let data = try? JSONEncoder().encode(fis) {
-                try? await SupabaseService.shared.insertRaw(into: "kasa_hareketleri", data: data)
+            let payload: [String: Any] = [
+                "uuid": UUID().uuidString,
+                "tenant_id": SupabaseService.shared.tenantId,
+                "tarih": bugun,
+                "islem_turu": kasaFarki >= 0 ? "KASA_FAZLASI" : "KASA_NOKSANI",
+                "hareket_turu": kasaFarki >= 0 ? "Tahsilat" : "Ödeme",
+                "giren": kasaFarki >= 0 ? abs(kasaFarki) : 0.0,
+                "cikan": kasaFarki < 0 ? abs(kasaFarki) : 0.0,
+                "gelir": kasaFarki >= 0 ? abs(kasaFarki) : 0.0,
+                "gider": kasaFarki < 0 ? abs(kasaFarki) : 0.0,
+                "cari_unvan": "KASA MUTABAKATI",
+                "evrak_no": "SYM-\(Int.random(in: 100...999))",
+                "tutar": abs(kasaFarki),
+                "aciklama": "Günlük Kasa Sayım Fişi - Fiziki: \(AppFormatters.money(fizikiToplam))",
+                "is_deleted": false
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                try? await SupabaseService.shared.insertRaw(into: "kasa_hareketler", data: data)
             }
             await MainActor.run {
                 isFinalizing = false

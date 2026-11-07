@@ -202,8 +202,14 @@ public struct CariKart: Identifiable, Codable, Hashable {
     
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
+        if let intId = Int(id) {
+            try container.encode(intId, forKey: .id)
+        }
+        let finalUuid = syncGuid ?? (Int(id) == nil ? id : UUID().uuidString)
+        try container.encode(finalUuid, forKey: .uuid)
+        try container.encode(tenantId ?? SupabaseService.shared.tenantId, forKey: .tenantId)
         try container.encodeIfPresent(cariKodu, forKey: .cariKodu)
+        try container.encodeIfPresent(cariKodu, forKey: .kod)
         try container.encode(unvan, forKey: .unvan)
         try container.encodeIfPresent(cariTuru, forKey: .cariTuru)
         try container.encodeIfPresent(yetkili, forKey: .yetkili)
@@ -214,6 +220,7 @@ public struct CariKart: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(telefon, forKey: .telefon)
         try container.encodeIfPresent(gsm, forKey: .gsm)
         try container.encodeIfPresent(email, forKey: .email)
+        try container.encodeIfPresent(email, forKey: .eposta)
         try container.encodeIfPresent(webSitesi, forKey: .webSitesi)
         try container.encodeIfPresent(adres, forKey: .adres)
         try container.encodeIfPresent(sevkAdresi, forKey: .sevkAdresi)
@@ -228,9 +235,8 @@ public struct CariKart: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(iban, forKey: .iban)
         try container.encodeIfPresent(islemTarihi, forKey: .islemTarihi)
         try container.encodeIfPresent(olusturmaTarihi, forKey: .olusturmaTarihi)
-        try container.encodeIfPresent(aktif, forKey: .aktif)
-        try container.encodeIfPresent(syncGuid, forKey: .syncGuid)
-        try container.encodeIfPresent(tenantId, forKey: .tenantId)
+        try container.encode(aktif ?? true, forKey: .aktif)
+        try container.encode(false, forKey: .isDeleted)
     }
 }
 
@@ -349,15 +355,23 @@ public struct CariHareket: Identifiable, Codable, Hashable {
     
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encodeIfPresent(cariId, forKey: .cariId)
+        if let intId = Int(id) {
+            try container.encode(intId, forKey: .id)
+        }
+        let finalUuid = syncGuid ?? (Int(id) == nil ? id : UUID().uuidString)
+        try container.encode(finalUuid, forKey: .uuid)
+        try container.encode(SupabaseService.shared.tenantId, forKey: .syncGuid)
+        
+        if let cid = cariId, let intCid = Int(cid) {
+            try container.encode(intCid, forKey: .cariId)
+        }
         try container.encodeIfPresent(tarih, forKey: .tarih)
         try container.encodeIfPresent(belgeNo, forKey: .belgeNo)
+        try container.encodeIfPresent(belgeNo, forKey: .evrakNo)
         try container.encodeIfPresent(islemTuru, forKey: .islemTuru)
         try container.encodeIfPresent(aciklama, forKey: .aciklama)
         try container.encode(borc, forKey: .borc)
         try container.encode(alacak, forKey: .alacak)
         try container.encode(bakiye, forKey: .bakiye)
-        try container.encodeIfPresent(syncGuid, forKey: .syncGuid)
     }
 }

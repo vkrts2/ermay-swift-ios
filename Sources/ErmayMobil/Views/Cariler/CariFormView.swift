@@ -247,6 +247,8 @@ public struct CariFormView: View {
             return
         }
         isSaving = true
+        errorMessage = nil
+        
         let saved = CariKart(
             id: cariToEdit?.id ?? UUID().uuidString,
             cariKodu: cariKod.isEmpty ? "CARI-\(Int.random(in: 100...999))" : cariKod,
@@ -255,9 +257,11 @@ public struct CariFormView: View {
             yetkili: yetkili,
             vergiDairesi: vergiDairesi,
             vergiNo: vergiNo,
+            tcKimlikNo: tcNo.isEmpty ? nil : tcNo,
             telefon: telefon,
             gsm: cepTelefon,
             email: eposta,
+            webSitesi: webAdresi.isEmpty ? nil : webAdresi,
             adres: adres,
             sevkAdresi: sevkAdresi,
             sehir: il,
@@ -266,10 +270,41 @@ public struct CariFormView: View {
             bakiyeTuru: cariToEdit?.bakiyeTuru ?? "A",
             riskLimiti: Double(riskLimiti) ?? 0.0,
             vadeGunu: Int(vadeGunu) ?? 0,
-            odemePlani: odemePlani
+            odemePlani: odemePlani,
+            ticaretSicilNo: ticaretSicilNo.isEmpty ? nil : ticaretSicilNo,
+            iban: iban.isEmpty ? nil : iban,
+            aktif: aktifMi,
+            syncGuid: cariToEdit?.syncGuid ?? UUID().uuidString,
+            tenantId: SupabaseService.shared.tenantId
         )
-        onSave?(saved)
-        isSaving = false
-        dismiss()
+        
+        Task {
+            do {
+                if let editItem = cariToEdit, let intId = Int(editItem.id) {
+                    try await SupabaseService.shared.update(table: "cariler", id: "\(intId)", item: saved)
+                } else {
+                    try await SupabaseService.shared.insert(into: "cariler", item: saved)
+                }
+                await MainActor.run {
+                    HardwareService.shared.hapticSuccess()
+                    onSave?(saved)
+                    isSaving = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    OfflineQueueService.shared.enqueue(
+                        action: cariToEdit == nil ? "INSERT" : "UPDATE",
+                        table: "cariler",
+                        recordId: saved.id,
+                        payload: try? JSONEncoder().encode(saved)
+                    )
+                    HardwareService.shared.hapticSuccess()
+                    onSave?(saved)
+                    isSaving = false
+                    dismiss()
+                }
+            }
+        }
     }
 }
