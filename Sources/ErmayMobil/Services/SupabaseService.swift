@@ -248,6 +248,33 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         return try await fetch(from: "teklifler", orderBy: "tarih.desc", limit: 5000)
     }
     
+    // MARK: - Safe Auto-ID Generator
+    public func getNextId(for table: String) async -> Int {
+        guard let url = URL(string: "\(baseUrl)/rest/v1/\(table)?select=id&order=id.desc&limit=1") else {
+            return max(1, Int(Date().timeIntervalSince1970) % 1_000_000)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        defaultHeaders().forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                return 1
+            }
+            if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+               let first = arr.first,
+               let val = first["id"] {
+                if let num = val as? NSNumber {
+                    return num.intValue + 1
+                } else if let str = val as? String, let intVal = Int(str) {
+                    return intVal + 1
+                }
+            }
+        } catch { }
+        return 1
+    }
+    
     // MARK: - PostgREST Insert
     public func insert<T: Encodable>(into table: String, item: T) async throws {
         let data = try encoder.encode(item)
@@ -290,6 +317,25 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         let (resData, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let errorMsg = String(data: resData, encoding: .utf8) ?? "Ham Kayıt Eklenemedi"
+            
+            // Eğer PostgreSQL id sequence atanmamışsa (null value in column "id" violates not-null constraint / 23502)
+            if errorMsg.contains("23502") || errorMsg.contains("\"id\"") || errorMsg.contains("'id'") {
+                if var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], dict["id"] == nil {
+                    let nextId = await getNextId(for: table)
+                    dict["id"] = nextId
+                    if let fallbackData = try? JSONSerialization.data(withJSONObject: dict) {
+                        var fbReq = URLRequest(url: url)
+                        fbReq.httpMethod = "POST"
+                        defaultHeaders(prefer: "return=minimal").forEach { fbReq.setValue($0.value, forHTTPHeaderField: $0.key) }
+                        fbReq.httpBody = fallbackData
+                        let (_, fbResponse) = try await session.data(for: fbReq)
+                        if let fbHttp = fbResponse as? HTTPURLResponse, (200...299).contains(fbHttp.statusCode) {
+                            return
+                        }
+                    }
+                }
+            }
+            
             throw NSError(domain: "SupabaseError", code: (response as? HTTPURLResponse)?.statusCode ?? 500, userInfo: [NSLocalizedDescriptionKey: errorMsg])
         }
     }

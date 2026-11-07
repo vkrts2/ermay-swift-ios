@@ -283,7 +283,12 @@ public struct CariFormView: View {
                 if let editItem = cariToEdit, let intId = Int(editItem.id) {
                     try await SupabaseService.shared.update(table: "cariler", id: "\(intId)", item: saved)
                 } else {
-                    try await SupabaseService.shared.insert(into: "cariler", item: saved)
+                    var itemToSave = saved
+                    if itemToSave.id.isEmpty || Int(itemToSave.id) == nil || Int(itemToSave.id)! <= 0 {
+                        let nextId = await SupabaseService.shared.getNextId(for: "cariler")
+                        itemToSave.id = String(nextId)
+                    }
+                    try await SupabaseService.shared.insert(into: "cariler", item: itemToSave)
                 }
                 await MainActor.run {
                     HardwareService.shared.hapticSuccess()

@@ -163,9 +163,14 @@ public struct StokFormView: View {
         
         Task {
             do {
-                try await SupabaseService.shared.insert(into: "stoklar", item: newStok)
+                var itemToSave = newStok
+                if itemToSave.id.isEmpty || Int(itemToSave.id) == nil || Int(itemToSave.id)! <= 0 {
+                    let nextId = await SupabaseService.shared.getNextId(for: "stoklar")
+                    itemToSave.id = String(nextId)
+                }
+                try await SupabaseService.shared.insert(into: "stoklar", item: itemToSave)
                 await MainActor.run {
-                    onSave?(newStok)
+                    onSave?(itemToSave)
                     dismiss()
                 }
             } catch {
