@@ -20,8 +20,8 @@ public struct AyarlarView: View {
     @State private var confirmAction: (() -> Void)? = nil
     
     // 1. Bulut ve API (Supabase / Firebase / QuestPDF)
-    @State private var dbUrl: String = "https://fqgbdymffknglqeqoogt.supabase.co"
-    @State private var secretKey: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    @State private var dbUrl: String = SupabaseService.shared.baseUrl
+    @State private var secretKey: String = SupabaseService.shared.anonKey
     @State private var pdfServerUrl: String = "https://ermay-pdf-api-390930978984.europe-west1.run.app"
     @State private var pingStatus: String = "Bulut Aktif • Canlı Senkronizasyon"
     @State private var isTestingPing: Bool = false
@@ -118,6 +118,10 @@ public struct AyarlarView: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear {
+            self.dbUrl = SupabaseService.shared.baseUrl
+            self.secretKey = SupabaseService.shared.anonKey
+        }
         .alert(alertMessage, isPresented: $showAlert) {
             Button("Tamam", role: .cancel) {}
         }
@@ -356,6 +360,7 @@ public struct AyarlarView: View {
             }
             
             saveButton(title: "Bulut ve API Ayarlarını Kaydet") {
+                SupabaseService.shared.updateConfiguration(baseUrl: dbUrl, anonKey: secretKey)
                 alertMessage = "Bulut ve API ayarları başarıyla kaydedildi."
                 showAlert = true
             }
