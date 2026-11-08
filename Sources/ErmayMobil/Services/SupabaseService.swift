@@ -12,6 +12,8 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
     @Published public var anonKey: String = SupabaseService.defaultAnonKey
     @Published public var tenantId: String = "tenant_ermay_master"
     @Published public var isConfigured: Bool = false
+    @Published public var activeFiscalYear: String = String(Calendar.current.component(.year, from: Date()))
+    @Published public var availableFiscalYears: [String] = [String(Calendar.current.component(.year, from: Date()))]
     public var authToken: String? = nil
     
     private let keychain = Keychain(service: "com.ermay.muhasebe").accessibility(.afterFirstUnlock)
@@ -47,7 +49,153 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
            !savedTenant.isEmpty {
             self.tenantId = savedTenant
         }
+        let defaultYear = String(Calendar.current.component(.year, from: Date()))
+        if let savedActiveYear = UserDefaults.standard.string(forKey: "supabase_active_fiscal_year"), !savedActiveYear.isEmpty {
+            self.activeFiscalYear = savedActiveYear
+        } else {
+            self.activeFiscalYear = defaultYear
+        }
+        if let savedYears = UserDefaults.standard.stringArray(forKey: "supabase_available_fiscal_years"), !savedYears.isEmpty {
+            self.availableFiscalYears = savedYears
+        } else {
+            self.availableFiscalYears = [self.activeFiscalYear]
+        }
         self.isConfigured = !self.baseUrl.isEmpty && !self.anonKey.isEmpty
+    }
+
+    public func fetchFiscalYears() async {
+        let defaultYear = String(Calendar.current.component(.year, from: Date()))
+        guard !baseUrl.isEmpty, !anonKey.isEmpty else {
+            await MainActor.run {
+                if self.availableFiscalYears.isEmpty {
+                    self.availableFiscalYears = [defaultYear]
+                }
+            }
+            return
+        }
+
+        var yearsSet = Set<Int>()
+        var cloudActiveYear: Int? = nil
+
+        // 1. public.mali_yillar tablosundan mevcut yılları çek
+        if let url = URL(string: "\(baseUrl)/rest/v1/mali_yillar?select=yil,is_active,is_deleted,tenant_id") {
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            defaultHeaders().forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
+            if let (data, response) = try? await session.data(for: req),
+               let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+               let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                for row in arr {
+                    let isDel = (row["is_deleted"] as? Bool) ?? false
+                    if isDel { continue }
+                    let rowTenant = (row["tenant_id"] as? String) ?? ""
+                    if !rowTenant.isEmpty && rowTenant != "default" && rowTenant != tenantId {
+                        continue
+                    }
+                    var yVal: Int? = nil
+                    if let num = row["yil"] as? NSNumber {
+                        yVal = num.intValue
+                    } else if let str = row["yil"] as? String, let parsed = Int(str) {
+                        yVal = parsed
+                    }
+                    if let y = yVal, y >= 2000 && y <= 2100 {
+                        yearsSet.insert(y)
+                        if (row["is_active"] as? Bool) == true {
+                            cloudActiveYear = y
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Yedek olarak public.notlar (__MALI_YILLAR_...__) kontrolü
+        if yearsSet.isEmpty {
+            let noteTitle = tenantId == "default" ? "__MALI_YILLAR__" : "__MALI_YILLAR_\(tenantId)__"
+            if let encoded = noteTitle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+               let url = URL(string: "\(baseUrl)/rest/v1/notlar?baslik=eq.\(encoded)&select=icerik,is_deleted") {
+                var req = URLRequest(url: url)
+                req.httpMethod = "GET"
+                defaultHeaders().forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
+                if let (data, response) = try? await session.data(for: req),
+                   let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                   let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                   let first = arr.first,
+                   ((first["is_deleted"] as? Bool) ?? false) == false,
+                   let icerik = first["icerik"] as? String,
+                   let icerikData = icerik.data(using: .utf8),
+                   let parsedYears = try? JSONSerialization.jsonObject(with: icerikData) as? [Int] {
+                    for y in parsedYears where y >= 2000 && y <= 2100 {
+                        yearsSet.insert(y)
+                    }
+                }
+            }
+        }
+
+        let sortedStrings: [String]
+        if yearsSet.isEmpty {
+            sortedStrings = [defaultYear]
+        } else {
+            sortedStrings = yearsSet.sorted(by: >).map { String($0) }
+        }
+
+        let resolvedActive: String
+        if let active = cloudActiveYear, sortedStrings.contains(String(active)) {
+            resolvedActive = String(active)
+        } else if sortedStrings.contains(self.activeFiscalYear) {
+            resolvedActive = self.activeFiscalYear
+        } else {
+            resolvedActive = sortedStrings.first ?? defaultYear
+        }
+
+        UserDefaults.standard.set(sortedStrings, forKey: "supabase_available_fiscal_years")
+        UserDefaults.standard.set(resolvedActive, forKey: "supabase_active_fiscal_year")
+
+        await MainActor.run {
+            self.availableFiscalYears = sortedStrings
+            self.activeFiscalYear = resolvedActive
+        }
+    }
+
+    public func setActiveFiscalYear(_ yearStr: String) async {
+        let trimmed = yearStr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        UserDefaults.standard.set(trimmed, forKey: "supabase_active_fiscal_year")
+        await MainActor.run {
+            self.activeFiscalYear = trimmed
+            if !self.availableFiscalYears.contains(trimmed) {
+                var updated = self.availableFiscalYears
+                updated.append(trimmed)
+                updated.sort(by: >)
+                self.availableFiscalYears = updated
+                UserDefaults.standard.set(updated, forKey: "supabase_available_fiscal_years")
+            }
+        }
+    }
+
+    public func createFiscalYear(_ yearStr: String) async {
+        let trimmed = yearStr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let yInt = Int(trimmed), yInt >= 2000 && yInt <= 2100 else { return }
+
+        if !baseUrl.isEmpty && !anonKey.isEmpty {
+            let nowStr = ISO8601DateFormatter().string(from: Date())
+            let payload: [String: Any] = [
+                "yil": yInt,
+                "mali_yil": yInt,
+                "uuid": "mali_yil_\(yInt)",
+                "tenant_id": tenantId,
+                "is_active": true,
+                "is_deleted": false,
+                "aciklama": "\(yInt) Mali Yılı",
+                "olusturma_tarihi": nowStr,
+                "updated_at": nowStr
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                try? await insertRaw(into: "mali_yillar", data: data)
+            }
+        }
+
+        await setActiveFiscalYear(trimmed)
+        await fetchFiscalYears()
     }
     
     public func updateConfiguration(baseUrl: String, anonKey: String, tenantId: String? = nil) {

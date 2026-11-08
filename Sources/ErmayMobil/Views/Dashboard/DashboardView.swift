@@ -3,7 +3,7 @@ import SwiftUI
 public struct DashboardView: View {
     @State private var activeTab: String = "recents" // "recents" | "receivables" | "payables"
     @State private var goalPeriod: String = "week" // "week" | "month"
-    @State private var activeFiscalYear: String = "2026"
+    @ObservedObject private var supabaseService = SupabaseService.shared
     @State private var showYearPicker: Bool = false
     @State private var showNotifications: Bool = false
     @ObservedObject private var notificationManager = NotificationManager.shared
@@ -120,9 +120,14 @@ public struct DashboardView: View {
                 BildirimlerView()
             }
             .confirmationDialog("Mali Yıl Seçimi", isPresented: $showYearPicker, titleVisibility: .visible) {
-                Button("2026 (Aktif Yıl)") { activeFiscalYear = "2026"; Task { await syncWithCloud() } }
-                Button("2025") { activeFiscalYear = "2025"; Task { await syncWithCloud() } }
-                Button("2024") { activeFiscalYear = "2024"; Task { await syncWithCloud() } }
+                ForEach(supabaseService.availableFiscalYears, id: \.self) { year in
+                    Button(supabaseService.activeFiscalYear == year ? "\(year) (Aktif Yıl)" : year) {
+                        Task {
+                            await supabaseService.setActiveFiscalYear(year)
+                            await syncWithCloud()
+                        }
+                    }
+                }
                 Button("Vazgeç", role: .cancel) {}
             }
             .task {
@@ -197,16 +202,18 @@ public struct DashboardView: View {
             
             Spacer()
             
-            // Mali Yıl Butonu (Masaüstü SwitchFiscalYearCommand Birebir Menü)
+            // Mali Yıl Butonu (Masaüstü SwitchFiscalYearCommand Birebir Menü - Sadece Oluşturulmuş Yıllar)
             Menu {
-                ForEach(["2027", "2026", "2025", "2024", "2023"], id: \.self) { year in
+                ForEach(supabaseService.availableFiscalYears, id: \.self) { year in
                     Button {
-                        activeFiscalYear = year
-                        Task { await syncWithCloud() }
+                        Task {
+                            await supabaseService.setActiveFiscalYear(year)
+                            await syncWithCloud()
+                        }
                     } label: {
                         HStack {
                             Text("Mali Yıl \(year)")
-                            if activeFiscalYear == year {
+                            if supabaseService.activeFiscalYear == year {
                                 Image(systemName: "checkmark")
                             }
                         }
@@ -217,7 +224,7 @@ public struct DashboardView: View {
                     Image(systemName: "calendar")
                         .font(.system(size: 12))
                         .foregroundColor(Color(hex: "38BDF8"))
-                    Text(activeFiscalYear)
+                    Text(supabaseService.activeFiscalYear)
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white)
                     Image(systemName: "chevron.down")
@@ -718,6 +725,7 @@ public struct DashboardView: View {
     // MARK: - Supabase Bulut Senkronizasyonu (Masaüstü ile Anlık Eşitleme)
     private func syncWithCloud() async {
         isSyncing = true
+        await supabaseService.fetchFiscalYears()
         
         do {
             // 1. Cariler tablosundan canlı bakiye ve toplamları çek

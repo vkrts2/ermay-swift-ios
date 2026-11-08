@@ -73,8 +73,8 @@ public struct AyarlarView: View {
     @State private var backupShareContent: String = ""
     
     // 5. Mali Yıl & Devir Sihirbazı
-    @State private var activeYear: String = "2026"
-    @State private var availableYears: [String] = ["2024", "2025", "2026"]
+    @State private var activeYear: String = SupabaseService.shared.activeFiscalYear
+    @State private var availableYears: [String] = SupabaseService.shared.availableFiscalYears
     @State private var newYearInput: String = ""
     @State private var devirKaynakYil: String = "2025"
     @State private var devirHedefYil: String = "2026"
@@ -121,6 +121,13 @@ public struct AyarlarView: View {
         .onAppear {
             self.dbUrl = SupabaseService.shared.baseUrl
             self.secretKey = SupabaseService.shared.anonKey
+            self.activeYear = SupabaseService.shared.activeFiscalYear
+            self.availableYears = SupabaseService.shared.availableFiscalYears
+            Task {
+                await SupabaseService.shared.fetchFiscalYears()
+                self.activeYear = SupabaseService.shared.activeFiscalYear
+                self.availableYears = SupabaseService.shared.availableFiscalYears
+            }
         }
         .alert(alertMessage, isPresented: $showAlert) {
             Button("Tamam", role: .cancel) {}
@@ -610,6 +617,9 @@ public struct AyarlarView: View {
                         let isSel = activeYear == yr
                         Button {
                             activeYear = yr
+                            Task {
+                                await SupabaseService.shared.setActiveFiscalYear(yr)
+                            }
                             alertMessage = "Aktif çalışma yılı \(yr) olarak ayarlandı."
                             showAlert = true
                         } label: {
@@ -634,9 +644,16 @@ public struct AyarlarView: View {
                     
                     Button {
                         let trimmed = newYearInput.trimmingCharacters(in: .whitespaces)
-                        if trimmed.count == 4, !availableYears.contains(trimmed) {
+                        if trimmed.count == 4, Int(trimmed) != nil, !availableYears.contains(trimmed) {
                             availableYears.append(trimmed)
+                            availableYears.sort(by: >)
+                            activeYear = trimmed
                             newYearInput = ""
+                            Task {
+                                await SupabaseService.shared.createFiscalYear(trimmed)
+                                self.availableYears = SupabaseService.shared.availableFiscalYears
+                                self.activeYear = SupabaseService.shared.activeFiscalYear
+                            }
                             alertMessage = trimmed + " mali yılı başarıyla oluşturuldu."
                             showAlert = true
                         }
