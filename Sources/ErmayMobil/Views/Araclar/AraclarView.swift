@@ -1071,7 +1071,7 @@ public struct AraclarView: View {
             
             // 6. Hedef Cari Bakiyesini Güncelle
             dst.bakiye += src.bakiye
-            await DataStore.shared.saveCari(dst, isUpdate: true)
+            try? await DataStore.shared.saveCari(dst, isUpdate: true)
             
             // 7. Kaynak Cariyi Kapat / Sil
             try? await SupabaseService.shared.delete(table: "cariler", id: src.id)
@@ -1176,7 +1176,7 @@ public struct AraclarView: View {
 
             // 4. Hedef Ürün Stok Miktarını Güncelle
             dst.mevcutMiktar += src.mevcutMiktar
-            await DataStore.shared.saveStok(dst, isUpdate: true)
+            try? await DataStore.shared.saveStok(dst, isUpdate: true)
 
             // 5. Kaynak Ürünü Kapat / Sil
             try? await SupabaseService.shared.delete(table: "stoklar", id: src.id)
@@ -1455,7 +1455,7 @@ public struct AraclarView: View {
                 let eski = s.satisFiyati
                 let fark = isYuzde ? (eski * oranDeger / 100.0) : oranDeger
                 s.satisFiyati = max(0, (isZam ? (eski + fark) : (eski - fark)))
-                await DataStore.shared.saveStok(s, isUpdate: true)
+                try? await DataStore.shared.saveStok(s, isUpdate: true)
             }
             await DataStore.shared.loadStoklarCacheFirst(forceCloudRefresh: true)
             await MainActor.run {
@@ -2170,7 +2170,7 @@ public struct AraclarView: View {
                               let val = Double(yeniLimitDegerStr.replacingOccurrences(of: ",", with: ".")) else { return }
                         c.riskLimiti = val
                         Task {
-                            await DataStore.shared.saveCari(c, isUpdate: true)
+                            try? await DataStore.shared.saveCari(c, isUpdate: true)
                             await DataStore.shared.loadCarilerCacheFirst(forceCloudRefresh: true)
                             await MainActor.run {
                                 showLimitEditSheet = false
@@ -2283,15 +2283,25 @@ public struct AraclarView: View {
         let satisFaturalari = faturalar.filter { $0.faturaTuru.localizedCaseInsensitiveContains("satış") || $0.faturaTuru.localizedCaseInsensitiveContains("satis") }
         
         let ayAdlari = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+        let hedeflerList = hRes ?? []
         var builtMonths: [AylikButceItem] = []
         for m in 1...12 {
-            let tgt = (hRes ?? []).first(where: { ($0.yil ?? seciliButceYili) == seciliButceYili && $0.ay == m })?.effectiveHedef ?? 0.0
+            let matchedHedef = hedeflerList.first { item in
+                let itemYil = item.yil ?? seciliButceYili
+                return itemYil == seciliButceYili && item.ay == m
+            }
+            let tgt = matchedHedef?.effectiveHedef ?? 0.0
             let p1 = String(format: "%04d-%02d", seciliButceYili, m)
             let p2 = String(format: ".%02d.%04d", m, seciliButceYili)
-            let act = satisFaturalari.filter { $0.tarih.hasPrefix(p1) || $0.tarih.hasSuffix(p2) }.reduce(0.0) { $0 + $1.genelToplam }
+            let act = satisFaturalari.filter { f in
+                f.tarih.hasPrefix(p1) || f.tarih.hasSuffix(p2)
+            }.reduce(0.0) { (sum: Double, f: Fatura) in sum + f.genelToplam }
             builtMonths.append(AylikButceItem(id: m, ayAdi: ayAdlari[m - 1], hedef: tgt, gerceklesen: act))
         }
-        let yHedef = (yhRes ?? []).first(where: { $0.yil == seciliButceYili })?.effectiveHedef ?? builtMonths.reduce(0.0) { $0 + $1.hedef }
+        let yillikHedeflerList = yhRes ?? []
+        let matchedYHedef = yillikHedeflerList.first { $0.yil == seciliButceYili }
+        let sumAylikHedef = builtMonths.reduce(0.0) { (sum: Double, item: AylikButceItem) in sum + item.hedef }
+        let yHedef = matchedYHedef?.effectiveHedef ?? sumAylikHedef
         
         // Risk Hesaplama (CekRiskAnalizViewModel Birebir)
         let cekList = cRes ?? []

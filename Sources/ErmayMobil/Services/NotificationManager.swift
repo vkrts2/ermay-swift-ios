@@ -24,3 +24,7 @@ public final class NotificationManager: ObservableObject {
     }
 }
 
+extension Notification.Name {
+    public static let userToastNotification = Notification.Name("com.ermay.muhasebe.userToastNotification")
+}
+

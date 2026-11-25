@@ -545,7 +545,7 @@ public struct MusteriTakipView: View {
             if let data = try? JSONSerialization.data(withJSONObject: payload) {
                 try? await SupabaseService.shared.insertRaw(into: "musteri_takip_klasorler", data: data)
             }
-            await loadKlasorler()
+            await loadData()
         }
     }
     

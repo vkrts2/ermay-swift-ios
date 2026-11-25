@@ -68,6 +68,12 @@ public final class DataStore: ObservableObject {
     }
 
     // MARK: - Direct PostgreSQL Cariler
+    public func loadAll(force: Bool = true) async {
+        await loadCarilerCacheFirst(forceCloudRefresh: force)
+        await loadStoklarCacheFirst(forceCloudRefresh: force)
+        await loadFaturalarCacheFirst(forceCloudRefresh: force)
+    }
+
     public func loadCarilerCacheFirst(forceCloudRefresh: Bool = true) async {
         guard forceCloudRefresh, SupabaseService.shared.isConfigured else { return }
         isLoadingCariler = self.cariler.isEmpty

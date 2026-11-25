@@ -196,59 +196,7 @@ public struct StoklarView: View {
                             VStack(spacing: 8) {
                                 ForEach(filteredStoklar) { item in
                                     let isSelected = selectedStok?.id == item.id
-                                    Button {
-                                        handleSelectStok(item)
-                                    } label: {
-                                        HStack(spacing: 12) {
-                                            ZStack {
-                                                RoundedRectangle(cornerRadius: 10)
-                                                    .fill(Color(hex: "0A84FF").opacity(0.15))
-                                                    .frame(width: 38, height: 38)
-                                                Image(systemName: "shippingbox.fill")
-                                                    .font(.system(size: 18))
-                                                    .foregroundColor(Color(hex: "0A84FF"))
-                                            }
-                                            
-                                            VStack(alignment: .leading, spacing: 3) {
-                                                Text(item.stokAdi)
-                                                    .font(.system(size: 13, weight: .bold))
-                                                    .foregroundColor(.white)
-                                                    .lineLimit(1)
-                                                
-                                                HStack(spacing: 6) {
-                                                    Text("\(item.stokKodu ?? "KODSUZ") • \(item.grupAdi ?? "Genel")")
-                                                        .font(.system(size: 11))
-                                                        .foregroundColor(Color(hex: "8E8E93"))
-                                                    
-                                                    Text(String(format: "%.2f %@", item.mevcutMiktar, item.birim ?? "Adet"))
-                                                        .font(.system(size: 10, weight: .bold))
-                                                        .foregroundColor(item.mevcutMiktar <= 0 ? Color(hex: "EF4444") : Color(hex: "30D158"))
-                                                        .padding(.horizontal, 6)
-                                                        .padding(.vertical, 2)
-                                                        .background((item.mevcutMiktar <= 0 ? Color(hex: "EF4444") : Color(hex: "30D158")).opacity(0.12))
-                                                        .cornerRadius(4)
-                                                }
-                                            }
-                                            
-                                            Spacer()
-                                            
-                                            VStack(alignment: .trailing, spacing: 2) {
-                                                Text(AppFormatters.money(item.satisFiyati))
-                                                    .font(.system(size: 13, weight: .bold))
-                                                    .foregroundColor(.white)
-                                                Text("Satış")
-                                                    .font(.system(size: 10))
-                                                    .foregroundColor(Color(hex: "8E8E93"))
-                                            }
-                                        }
-                                        .padding(12)
-                                        .background(isSelected ? Color(hex: "0A84FF").opacity(0.12) : Color.white.opacity(0.03))
-                                        .cornerRadius(14)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 14)
-                                                .stroke(isSelected ? Color(hex: "0A84FF") : Color.white.opacity(0.06), lineWidth: 1)
-                                        )
-                                    }
+                                    stokItemRow(item: item, isSelected: isSelected)
                                 }
                             }
                         }
@@ -784,7 +732,7 @@ public struct StoklarView: View {
                         if let hData = try? JSONSerialization.data(withJSONObject: hPayload) {
                             try? await SupabaseService.shared.insertRaw(into: "stok_hareketler", data: hData)
                         }
-                        await DataStore.shared.saveStok(sel, isUpdate: true)
+                        try? await DataStore.shared.saveStok(sel, isUpdate: true)
                     }
                 }
                 showManualIslemModal = false
@@ -831,5 +779,62 @@ public struct StoklarView: View {
             rootVC.present(av, animated: true)
         }
         #endif
+    }
+
+    @ViewBuilder
+    private func stokItemRow(item: StokKart, isSelected: Bool) -> some View {
+        Button {
+            handleSelectStok(item)
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color(hex: "0A84FF").opacity(0.15))
+                        .frame(width: 38, height: 38)
+                    Image(systemName: "shippingbox.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(Color(hex: "0A84FF"))
+                }
+                
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.stokAdi)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    
+                    HStack(spacing: 6) {
+                        Text("\(item.stokKodu ?? "KODSUZ") • \(item.grupAdi ?? "Genel")")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "8E8E93"))
+                        
+                        Text(String(format: "%.2f %@", item.mevcutMiktar, item.birim ?? "Adet"))
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(item.mevcutMiktar <= 0 ? Color(hex: "EF4444") : Color(hex: "30D158"))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background((item.mevcutMiktar <= 0 ? Color(hex: "EF4444") : Color(hex: "30D158")).opacity(0.12))
+                            .cornerRadius(4)
+                    }
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(AppFormatters.money(item.satisFiyati))
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("Satış")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(hex: "8E8E93"))
+                }
+            }
+            .padding(12)
+            .background(isSelected ? Color(hex: "0A84FF").opacity(0.12) : Color.white.opacity(0.03))
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(isSelected ? Color(hex: "0A84FF") : Color.white.opacity(0.06), lineWidth: 1)
+            )
+        }
     }
 }
