@@ -204,18 +204,37 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
     public var id: String
     public var faturaId: String?
     public var stokId: String?
+    public var stokUuid: String?
     public var stokKodu: String?
     public var stokAdi: String
     public var birim: String?
-    public var miktar: Double
-    public var birimFiyat: Double
-    public var kdvOrani: Double
+    public var miktar: Double {
+        didSet { recalculateTotals() }
+    }
+    public var birimFiyat: Double {
+        didSet { recalculateTotals() }
+    }
+    public var kdvOrani: Double {
+        didSet { recalculateTotals() }
+    }
     public var kdvTutari: Double
-    public var iskontoOrani: Double
+    public var iskontoOrani: Double {
+        didSet { recalculateTotals() }
+    }
     public var iskontoTutari: Double
     public var netTutar: Double
     public var aciklama: String?
     public var syncGuid: String?
+    
+    public mutating func recalculateTotals() {
+        let brut = miktar * birimFiyat
+        let isk = brut * (iskontoOrani / 100.0)
+        let matrah = brut - isk
+        let kdv = matrah * (kdvOrani / 100.0)
+        self.iskontoTutari = isk
+        self.kdvTutari = kdv
+        self.netTutar = matrah + kdv
+    }
     
     public var toplamTutar: Double {
         get { netTutar }
@@ -226,6 +245,7 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         case id
         case faturaId = "fatura_id"
         case stokId = "stok_id"
+        case stokUuid = "stok_uuid"
         case stokKodu = "stok_kodu"
         case stokAdi = "stok_adi"
         case birim
@@ -247,6 +267,7 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         id: String = UUID().uuidString,
         faturaId: String? = nil,
         stokId: String? = nil,
+        stokUuid: String? = nil,
         stokKodu: String? = nil,
         stokAdi: String = "",
         birim: String? = "Adet",
@@ -254,11 +275,13 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         birimFiyat: Double = 0.0,
         kdvOrani: Double = 20.0,
         iskontoOrani: Double = 0.0,
-        aciklama: String? = nil
+        aciklama: String? = nil,
+        syncGuid: String? = nil
     ) {
         self.id = id
         self.faturaId = faturaId
         self.stokId = stokId
+        self.stokUuid = stokUuid
         self.stokKodu = stokKodu
         self.stokAdi = stokAdi
         self.birim = birim
@@ -276,7 +299,7 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         self.iskontoTutari = isk
         self.kdvTutari = kdv
         self.netTutar = matrah + kdv
-        self.syncGuid = UUID().uuidString
+        self.syncGuid = syncGuid ?? UUID().uuidString
     }
     
     // Convenience init with explicit toplamTutar
@@ -284,6 +307,7 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         id: String = UUID().uuidString,
         faturaId: String? = nil,
         stokId: String? = nil,
+        stokUuid: String? = nil,
         stokKodu: String? = nil,
         stokAdi: String,
         miktar: Double = 1.0,
@@ -292,11 +316,13 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         kdvOrani: Double = 20.0,
         iskontoOrani: Double = 0.0,
         toplamTutar: Double = 0.0,
-        kdvTutari: Double? = nil
+        kdvTutari: Double? = nil,
+        syncGuid: String? = nil
     ) {
         self.id = id
         self.faturaId = faturaId
         self.stokId = stokId
+        self.stokUuid = stokUuid
         self.stokKodu = stokKodu
         self.stokAdi = stokAdi
         self.miktar = miktar
@@ -313,7 +339,7 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         self.iskontoTutari = isk
         self.kdvTutari = kdvTutari ?? calculatedKdv
         self.netTutar = toplamTutar > 0 ? toplamTutar : (matrah + self.kdvTutari)
-        self.syncGuid = UUID().uuidString
+        self.syncGuid = syncGuid ?? UUID().uuidString
     }
     
     public init(from decoder: Decoder) throws {
@@ -339,6 +365,7 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
             self.stokId = try? c.decode(String.self, forKey: .stokId)
         }
         
+        self.stokUuid = try? c.decode(String.self, forKey: .stokUuid)
         self.stokKodu = try? c.decode(String.self, forKey: .stokKodu)
         self.stokAdi = (try? c.decode(String.self, forKey: .stokAdi)) ?? ""
         self.birim = (try? c.decode(String.self, forKey: .birim)) ?? "Adet"
@@ -371,18 +398,18 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         self.iskontoTutari = (try? c.decode(Double.self, forKey: .iskontoTutari)) ?? ((self.miktar * self.birimFiyat) * (self.iskontoOrani / 100.0))
         self.kdvTutari = (try? c.decode(Double.self, forKey: .kdvTutari)) ?? (((self.miktar * self.birimFiyat) - self.iskontoTutari) * (self.kdvOrani / 100.0))
         
-        if let dTop = try? c.decode(Double.self, forKey: .netTutar) {
+        if let dTop = try? c.decode(Double.self, forKey: .netTutar), dTop > 0 {
             self.netTutar = dTop
-        } else if let dTop2 = try? c.decode(Double.self, forKey: .toplamTutar) {
+        } else if let dTop2 = try? c.decode(Double.self, forKey: .toplamTutar), dTop2 > 0 {
             self.netTutar = dTop2
-        } else if let dTop3 = try? c.decode(Double.self, forKey: .tutar) {
+        } else if let dTop3 = try? c.decode(Double.self, forKey: .tutar), dTop3 > 0 {
             self.netTutar = dTop3
         } else {
             self.netTutar = (self.miktar * self.birimFiyat) - self.iskontoTutari + self.kdvTutari
         }
         
         self.aciklama = try? c.decode(String.self, forKey: .aciklama)
-        self.syncGuid = try? c.decode(String.self, forKey: .syncGuid)
+        self.syncGuid = (try? c.decode(String.self, forKey: .syncGuid)) ?? (try? c.decode(String.self, forKey: .uuid))
     }
     
     public func encode(to encoder: Encoder) throws {
@@ -394,6 +421,7 @@ public struct FaturaKalem: Identifiable, Codable, Hashable {
         try container.encode(finalUuid, forKey: .uuid)
         try container.encodeIfPresent(faturaId, forKey: .faturaId)
         try container.encodeIfPresent(stokId, forKey: .stokId)
+        try container.encodeIfPresent(stokUuid, forKey: .stokUuid)
         try container.encodeIfPresent(stokKodu, forKey: .stokKodu)
         try container.encode(stokAdi, forKey: .stokAdi)
         try container.encodeIfPresent(birim, forKey: .birim)

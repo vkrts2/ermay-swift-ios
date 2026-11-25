@@ -5,8 +5,8 @@ import KeychainAccess
 public final class SupabaseService: ObservableObject, @unchecked Sendable {
     public static let shared = SupabaseService()
     
-    public static let defaultBaseUrl = "https://fqgbdymffknglqeqoogt.supabase.co"
-    public static let defaultAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxZ2JkeW1mZmtuZ2xxZXFvb2d0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1ODUzMDEsImV4cCI6MjEwNTE2MTMwMX0.pBeE2ivWpbkAd8KSN1y2pXNZPIr_1mGMLXXHYPzjTDg"
+    public static let defaultBaseUrl = ""
+    public static let defaultAnonKey = ""
     private let unsupportedColsLock = NSLock()
     private var unsupportedColumnsByTable: [String: Set<String>] = [:]
     
@@ -305,7 +305,8 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         var headers: [String: String] = [
             "apikey": anonKey,
             "Authorization": "Bearer \(authToken ?? anonKey)",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-Tenant-Id": tenantId.isEmpty ? "tenant_ermay_master" : tenantId
         ]
         if let prefer = prefer {
             headers["Prefer"] = prefer
@@ -379,20 +380,26 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             URLQueryItem(name: "select", value: select)
         ]
         
-        if applyTenantFilter {
-            // Canlı veritabanındaki tenant_id çeşitliliğini kapsayan filtre
-            queryItems.append(URLQueryItem(name: "or", value: "(tenant_id.eq.\(tenantId),tenant_id.eq.default,tenant_id.is.null)"))
-        }
-
-        // Soft-delete filtresi: Silinmiş kayıtları getirme (neq.true hem false hem null olanları kapsar)
-        if !filters.keys.contains("deleted_at") && !filters.keys.contains("is_deleted") {
-            queryItems.append(URLQueryItem(name: "is_deleted", value: "neq.true"))
-        }
-        
         // Mali yıl izolasyonu: Mali yıla tabi operasyonel tablolarda aktif mali yılı filtrele
         let fiscalYearTables = ["faturalar", "cari_hareketler", "kasa_hareketler", "banka_hareketler", "stok_hareketler"]
-        if fiscalYearTables.contains(table) && !filters.keys.contains("mali_yil") {
+        let applyFiscalYear = fiscalYearTables.contains(table) && !filters.keys.contains("mali_yil")
+        
+        if applyTenantFilter && applyFiscalYear {
+            // PostgREST birden fazla or= parametresini ezeceğinden tek bir and=(or(...),or(...)) içinde birleştirilir
+            queryItems.append(URLQueryItem(
+                name: "and",
+                value: "(or(tenant_id.eq.\(tenantId),tenant_id.eq.default,tenant_id.is.null),or(mali_yil.eq.\(activeFiscalYear),mali_yil.is.null))"
+            ))
+        } else if applyTenantFilter {
+            // Canlı veritabanındaki tenant_id çeşitliliğini kapsayan filtre
+            queryItems.append(URLQueryItem(name: "or", value: "(tenant_id.eq.\(tenantId),tenant_id.eq.default,tenant_id.is.null)"))
+        } else if applyFiscalYear {
             queryItems.append(URLQueryItem(name: "or", value: "(mali_yil.eq.\(activeFiscalYear),mali_yil.is.null)"))
+        }
+
+        // Soft-delete filtresi: Silinmiş kayıtları getirme (not.is.true PostgreSQL'de FALSE ve NULL satırlarını güvenli kapsar)
+        if !filters.keys.contains("deleted_at") && !filters.keys.contains("is_deleted") {
+            queryItems.append(URLQueryItem(name: "is_deleted", value: "not.is.true"))
         }
         
         for (key, val) in filters {
@@ -459,33 +466,6 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
     
     public func fetchTeklifler() async throws -> [Teklif] {
         return try await fetch(from: "teklifler", orderBy: "tarih.desc", limit: 5000)
-    }
-    
-    // MARK: - Safe Auto-ID Generator
-    public func getNextId(for table: String) async -> Int {
-        guard let url = URL(string: "\(baseUrl)/rest/v1/\(table)?select=id&order=id.desc&limit=1") else {
-            return max(1, Int(Date().timeIntervalSince1970) % 1_000_000)
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        defaultHeaders().forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
-        
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                return 1
-            }
-            if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-               let first = arr.first,
-               let val = first["id"] {
-                if let num = val as? NSNumber {
-                    return num.intValue + 1
-                } else if let str = val as? String, let intVal = Int(str) {
-                    return intVal + 1
-                }
-            }
-        } catch { }
-        return 1
     }
     
     // MARK: - Schema-Resilient Column Stripping Helpers
@@ -580,18 +560,21 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         }
         var currentData = stripUnsupportedColumns(table: table, data: data)
         var retries = 25
+        var lastStatus = 500
+        var lastError = "Upsert başarısız"
         while retries > 0 {
             retries -= 1
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            defaultHeaders(prefer: "resolution=merge-duplicates,return=minimal").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+            defaultHeaders(prefer: "resolution=merge-duplicates,return=representation").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
             request.httpBody = currentData
             let (resData, response) = try await session.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
                 return
             }
-            let errorMsg = String(data: resData, encoding: .utf8) ?? ""
-            if let missingCol = extractMissingColumn(from: errorMsg),
+            lastStatus = (response as? HTTPURLResponse)?.statusCode ?? 500
+            lastError = String(data: resData, encoding: .utf8) ?? "Upsert başarısız"
+            if let missingCol = extractMissingColumn(from: lastError),
                var dict = (try? JSONSerialization.jsonObject(with: currentData)) as? [String: Any],
                dict.keys.contains(missingCol) {
                 recordUnsupportedColumn(table: table, column: missingCol)
@@ -601,10 +584,9 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
                     continue
                 }
             }
-            break
+            throw NSError(domain: "SupabaseError", code: lastStatus, userInfo: [NSLocalizedDescriptionKey: lastError])
         }
-        // Fallback to insertRaw if table lacks unique index on onConflict column
-        try await insertRaw(into: table, data: currentData)
+        throw NSError(domain: "SupabaseError", code: lastStatus, userInfo: [NSLocalizedDescriptionKey: lastError])
     }
 
     public func insertRaw(into table: String, data: Data) async throws {
@@ -617,7 +599,7 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             retries -= 1
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            defaultHeaders(prefer: "resolution=merge-duplicates,return=minimal").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+            defaultHeaders(prefer: "return=representation").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
             request.httpBody = currentData
             let (resData, response) = try await session.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
@@ -625,7 +607,7 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             }
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 500
             let errorMsg = String(data: resData, encoding: .utf8) ?? "Ham Kayıt Eklenemedi"
-            
+
             if let missingCol = extractMissingColumn(from: errorMsg),
                var dict = (try? JSONSerialization.jsonObject(with: currentData)) as? [String: Any],
                dict.keys.contains(missingCol) {
@@ -636,30 +618,12 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
                     continue
                 }
             }
-            
-            // Idempotent duplicate UUID guard (23505): if exact UUID already exists from partial bundle retry, treat as committed
-            if statusCode == 409 || errorMsg.contains("23505") {
-                if let dict = (try? JSONSerialization.jsonObject(with: currentData)) as? [String: Any], dict["uuid"] != nil {
-                    return
-                }
-            }
-            
-            // Eğer PostgreSQL id sequence atanmamışsa (null value in column "id" violates not-null constraint / 23502)
-            if errorMsg.contains("23502") || errorMsg.contains("\"id\"") || errorMsg.contains("'id'") {
-                if var dict = (try? JSONSerialization.jsonObject(with: currentData)) as? [String: Any], dict["id"] == nil {
-                    let nextId = await getNextId(for: table)
-                    dict["id"] = nextId
-                    if let fallbackData = try? JSONSerialization.data(withJSONObject: dict) {
-                        currentData = fallbackData
-                        continue
-                    }
-                }
-            }
-            
+
+            // Propagate 409/23505 conflicts and all database errors directly to caller
             throw NSError(domain: "SupabaseError", code: statusCode, userInfo: [NSLocalizedDescriptionKey: errorMsg])
         }
     }
-    
+
     // MARK: - PostgREST Raw Update
     public func updateRaw(table: String, id: String, data: Data) async throws {
         let filter = Int(id) != nil ? "id=eq.\(id)" : "uuid=eq.\(id)"
@@ -672,10 +636,13 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             retries -= 1
             var request = URLRequest(url: url)
             request.httpMethod = "PATCH"
-            defaultHeaders(prefer: "return=minimal").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+            defaultHeaders(prefer: "return=representation").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
             request.httpBody = currentData
             let (resData, response) = try await session.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
+                if let arr = try? JSONSerialization.jsonObject(with: resData) as? [[String: Any]], arr.isEmpty {
+                    throw NSError(domain: "SupabaseError", code: 404, userInfo: [NSLocalizedDescriptionKey: "Kayıt sunucuda bulunamadı veya başka bir cihaz tarafından silinmiş (\(table): \(id))."])
+                }
                 return
             }
             let errorMsg = String(data: resData, encoding: .utf8) ?? "Ham Güncelleme Başarısız"
@@ -692,7 +659,7 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             throw NSError(domain: "SupabaseError", code: (response as? HTTPURLResponse)?.statusCode ?? 500, userInfo: [NSLocalizedDescriptionKey: errorMsg])
         }
     }
-    
+
     // MARK: - PostgREST Update With Custom Filter
     public func updateWhere(table: String, filter: String, data: Data) async throws {
         guard let url = URL(string: "\(baseUrl)/rest/v1/\(table)?\(filter)") else {
@@ -704,7 +671,7 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             retries -= 1
             var request = URLRequest(url: url)
             request.httpMethod = "PATCH"
-            defaultHeaders(prefer: "return=minimal").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+            defaultHeaders(prefer: "return=representation").forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
             request.httpBody = currentData
             let (resData, response) = try await session.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) {
@@ -743,6 +710,20 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         
         let jsonData = try JSONSerialization.data(withJSONObject: softDeletePayload)
         try await updateRaw(table: table, id: id, data: jsonData)
+    }
+    
+    // MARK: - PostgREST Soft Delete With Custom Filter
+    public func deleteWhere(table: String, filter: String) async throws {
+        let nowStr = ISO8601DateFormatter().string(from: Date())
+        let softDeletePayload: [String: Any] = [
+            "deleted_at": nowStr,
+            "is_deleted": true,
+            "updated_at": nowStr,
+            "device_id": "iPhone-App"
+        ]
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: softDeletePayload)
+        try await updateWhere(table: table, filter: filter, data: jsonData)
     }
     
     // MARK: - RPC Calls
@@ -844,30 +825,51 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         webSocketTask = nil
     }
     
-    private func scheduleDebouncedRealtimeBroadcast() {
+    private func extractRealtimeTable(from jsonText: String) -> String? {
+        guard let data = jsonText.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = root["payload"] as? [String: Any] else {
+            return nil
+        }
+        if let innerData = payload["data"] as? [String: Any],
+           let table = innerData["table"] as? String, !table.isEmpty {
+            return table.lowercased()
+        }
+        if let table = payload["table"] as? String, !table.isEmpty {
+            return table.lowercased()
+        }
+        return nil
+    }
+
+    private func scheduleDebouncedRealtimeBroadcast(table: String? = nil) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.realtimeDebounceWorkItem?.cancel()
             let item = DispatchWorkItem {
-                NotificationCenter.default.post(name: .supabaseRealtimeDataChanged, object: nil)
+                var info: [AnyHashable: Any] = [:]
+                if let t = table, !t.isEmpty {
+                    info["table"] = t
+                }
+                NotificationCenter.default.post(name: .supabaseRealtimeDataChanged, object: nil, userInfo: info)
             }
             self.realtimeDebounceWorkItem = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
         }
     }
-    
+
     private func listenWebSocketMessages() {
         guard isRealtimeActive, let task = webSocketTask else { return }
-        
+
         task.receive { [weak self] result in
             guard let self = self, self.isRealtimeActive else { return }
-            
+
             switch result {
             case .success(let message):
                 self.reconnectAttempt = 0
                 if case .string(let text) = message {
                     if text.contains("postgres_changes") || text.contains("INSERT") || text.contains("UPDATE") || text.contains("DELETE") {
-                        self.scheduleDebouncedRealtimeBroadcast()
+                        let changedTable = self.extractRealtimeTable(from: text)
+                        self.scheduleDebouncedRealtimeBroadcast(table: changedTable)
                     }
                 }
                 self.listenWebSocketMessages()

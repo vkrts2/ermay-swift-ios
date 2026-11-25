@@ -2,10 +2,11 @@ import SwiftUI
 
 public struct FaturalarView: View {
     @ObservedObject private var dataStore = DataStore.shared
+    @ObservedObject private var supabaseService = SupabaseService.shared
     @State private var faturalar: [Fatura] = []
     @State private var searchText: String = ""
-    @State private var startDateStr: String = "01.01.2026"
-    @State private var endDateStr: String = "31.12.2026"
+    @State private var startDateStr: String = "01.01.\(SupabaseService.shared.activeFiscalYear)"
+    @State private var endDateStr: String = "31.12.\(SupabaseService.shared.activeFiscalYear)"
     @State private var isLoading: Bool = false
     
     // Sheets
@@ -76,7 +77,7 @@ public struct FaturalarView: View {
                         // Date Range Row
                         HStack(spacing: 6) {
                             HStack {
-                                TextField("01.01.2026", text: $startDateStr)
+                                TextField("01.01.\(supabaseService.activeFiscalYear)", text: $startDateStr)
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundColor(.white)
                                     .multilineTextAlignment(.center)
@@ -91,7 +92,7 @@ public struct FaturalarView: View {
                                 .foregroundColor(Color(hex: "64748B"))
                             
                             HStack {
-                                TextField("31.12.2026", text: $endDateStr)
+                                TextField("31.12.\(supabaseService.activeFiscalYear)", text: $endDateStr)
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundColor(.white)
                                     .multilineTextAlignment(.center)
@@ -248,7 +249,16 @@ public struct FaturalarView: View {
                 #endif
             }
             .task {
+                startDateStr = "01.01.\(supabaseService.activeFiscalYear)"
+                endDateStr = "31.12.\(supabaseService.activeFiscalYear)"
                 await loadFaturalar()
+            }
+            .onChange(of: supabaseService.activeFiscalYear) { newYear in
+                startDateStr = "01.01.\(newYear)"
+                endDateStr = "31.12.\(newYear)"
+                Task {
+                    await loadFaturalar()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .supabaseRealtimeDataChanged)) { _ in
                 Task {

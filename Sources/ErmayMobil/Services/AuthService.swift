@@ -41,12 +41,25 @@ public final class AuthService: ObservableObject {
         }
     }
     
-    // Masaüstü C# Rfc2898DeriveBytes (PBKDF2-SHA256, 100.000 iterasyon + eski 10.000 iterasyon uyumluluğu) ile %100 uyumlu şifre doğrulama
-    private func verifyPassword(plain: String, storedHash: String, saltBase64: String?) -> Bool {
-        if storedHash.starts(with: "PBKDF2$"), let saltBase64 = saltBase64, !saltBase64.isEmpty {
-            guard let saltData = Data(base64Encoded: saltBase64),
-                  let expectedHashData = Data(base64Encoded: storedHash.replacingOccurrences(of: "PBKDF2$", with: "")) else {
+    // Masaüstü C# Rfc2898DeriveBytes (PBKDF2-SHA256, 100.000 iterasyon + eski 10.000 iterasyon uyumluluğu) ve Base64 SHA256 ile %100 uyumlu şifre doğrulama
+    public func verifyPassword(plain: String, storedHash: String, saltBase64: String?) -> Bool {
+        guard !storedHash.isEmpty else { return false }
+        
+        if storedHash.starts(with: "PBKDF2$") {
+            let expectedBase64 = String(storedHash.dropFirst("PBKDF2$".count))
+            guard let expectedHashData = Data(base64Encoded: expectedBase64) else {
                 return false
+            }
+            
+            let saltData: Data
+            if let s = saltBase64, !s.isEmpty {
+                if let decoded = Data(base64Encoded: s) {
+                    saltData = decoded
+                } else {
+                    saltData = s.data(using: .utf8) ?? Data()
+                }
+            } else {
+                saltData = Data(repeating: 0, count: 16)
             }
             
             let passwordData = plain.data(using: .utf8) ?? Data()
@@ -70,30 +83,95 @@ public final class AuthService: ObservableObject {
                     }
                 }
                 
-                if status == kCCSuccess && derivedKey == expectedHashData {
+                if status == kCCSuccess && constantTimeEquals(derivedKey, expectedHashData) {
                     return true
                 }
             }
+            return false
         }
         
-        // Düz SHA256 kontrolü (fallback)
-        let sha256Hex = SHA256.hash(data: Data(plain.utf8)).map { String(format: "%02x", $0) }.joined()
-        if sha256Hex.lowercased() == storedHash.lowercased() {
-            return true
+        // Legacy Base64-encoded SHA256 (salted: password + salt, unsalted: password)
+        guard let expectedBytes = Data(base64Encoded: storedHash) else {
+            return false
         }
         
-        return false
+        if let salt = saltBase64, !salt.isEmpty {
+            let saltedInput = Data((plain + salt).utf8)
+            let saltedDigest = Data(SHA256.hash(data: saltedInput))
+            if constantTimeEquals(saltedDigest, expectedBytes) {
+                return true
+            }
+        }
+        
+        let unsaltedDigest = Data(SHA256.hash(data: Data(plain.utf8)))
+        return constantTimeEquals(unsaltedDigest, expectedBytes)
     }
     
+    private func constantTimeEquals(_ a: Data, _ b: Data) -> Bool {
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<a.count {
+            diff |= a[i] ^ b[i]
+        }
+        return diff == 0
+    }
+    
+    private func escapePostgrestFilterValue(_ value: String) -> String {
+        return value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: "(", with: "")
+            .replacingOccurrences(of: ")", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+    }
+    
+    private func derivePasswordHash(plain: String, saltBase64: String, isPbkdf2: Bool) -> String {
+        if isPbkdf2 {
+            let saltData: Data
+            if !saltBase64.isEmpty {
+                saltData = Data(base64Encoded: saltBase64) ?? (saltBase64.data(using: .utf8) ?? Data())
+            } else {
+                saltData = Data(repeating: 0, count: 16)
+            }
+            let passwordData = plain.data(using: .utf8) ?? Data()
+            var derivedKey = Data(repeating: 0, count: 32)
+            let status = derivedKey.withUnsafeMutableBytes { derivedKeyBytes in
+                saltData.withUnsafeBytes { saltBytes in
+                    passwordData.withUnsafeBytes { passwordBytes in
+                        CCKeyDerivationPBKDF(
+                            CCPBKDFAlgorithm(kCCPBKDF2),
+                            passwordBytes.baseAddress?.assumingMemoryBound(to: Int8.self),
+                            passwordData.count,
+                            saltBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                            saltData.count,
+                            CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                            100_000,
+                            derivedKeyBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                            32
+                        )
+                    }
+                }
+            }
+            if status == kCCSuccess {
+                return "PBKDF2$" + derivedKey.base64EncodedString()
+            }
+            return ""
+        }
+
+        let input = saltBase64.isEmpty ? plain : (plain + saltBase64)
+        let digest = Data(SHA256.hash(data: Data(input.utf8)))
+        return digest.base64EncodedString()
+    }
+
     public func login(username: String, pass: String, tenantId: String = "") async -> Bool {
         isLoading = true
         errorMessage = nil
-        
-        let cleanUsername = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let cleanIdentifier = username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let cleanPass = pass.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard !cleanUsername.isEmpty else {
-            errorMessage = "Kullanıcı adı boş bırakılamaz."
+
+        guard !cleanIdentifier.isEmpty else {
+            errorMessage = "Kullanıcı adı veya e-posta boş bırakılamaz."
             isLoading = false
             return false
         }
@@ -102,111 +180,149 @@ public final class AuthService: ObservableObject {
             isLoading = false
             return false
         }
-        
-        // 1. Supabase __SYS_USERS__ Notlar Havuzundan Canlı Kullanıcı Kontrolü
+
+        let requestedTenant = tenantId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tenantParam: Any = (!requestedTenant.isEmpty && requestedTenant != "default") ? requestedTenant : "auto"
+
+        // 1. Direct PostgreSQL Auth via get_user_salt_v2 + verify_user_login_v2 (username OR email + tenant resolution)
         do {
-            struct SysNote: Decodable {
-                let id: Int?
-                let baslik: String?
-                let title: String?
-                let icerik: String?
-                let content: String?
-            }
-            let notes: [SysNote] = try await SupabaseService.shared.fetch(
-                from: "notlar",
-                filters: ["or": "(id.eq.999999,baslik.eq.__SYS_USERS__,title.eq.__SYS_USERS__)"],
-                applyTenantFilter: false
+            let saltRes = try await SupabaseService.shared.rpcRaw(
+                function: "get_user_salt_v2",
+                params: [
+                    "p_identifier": cleanIdentifier,
+                    "p_tenant_id": tenantParam
+                ]
             )
-            
-            for note in notes {
-                guard let jsonStr = note.icerik ?? note.content, let data = jsonStr.data(using: .utf8) else { continue }
-                if let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                    for uDict in jsonArray {
-                        let rawName = (uDict["username"] as? String) ?? (uDict["Username"] as? String) ?? ""
-                        let uName = rawName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                        let uPass = (uDict["password"] as? String) ?? (uDict["Password"] as? String) ?? (uDict["password_hash"] as? String) ?? ""
-                        let uSalt = (uDict["password_salt"] as? String) ?? (uDict["PasswordSalt"] as? String)
-                        let uEmail = (uDict["email"] as? String) ?? (uDict["Email"] as? String) ?? "\(cleanUsername)@ermay.local"
-                        let uRole = (uDict["role"] as? String) ?? (uDict["Role"] as? String) ?? "Admin"
-                        
-                        // Kullanıcının masaüstünde belirlenmiş gerçek tenant kimliği
-                        let rawTenant = (uDict["tenant_id"] as? String) ?? (uDict["TenantId"] as? String) ?? ""
-                        var resolvedTenant = rawTenant.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let requestedTenant = tenantId.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !requestedTenant.isEmpty && requestedTenant != "default" {
-                            resolvedTenant = requestedTenant
-                        } else if resolvedTenant.isEmpty || resolvedTenant == "default" {
-                            resolvedTenant = "tenant_ermay_master"
-                        }
-                        
-                        if uName == cleanUsername && !uPass.isEmpty && uPass.lowercased() != "temporary" {
-                            if verifyPassword(plain: cleanPass, storedHash: uPass, saltBase64: uSalt) || cleanPass == uPass {
-                                let user = User(
-                                    id: String(describing: uDict["id"] ?? uDict["Id"] ?? "1"),
-                                    email: uEmail,
-                                    username: cleanUsername,
-                                    fullName: cleanUsername.capitalized,
-                                    role: uRole,
-                                    tenantId: resolvedTenant
-                                )
-                                
-                                SupabaseService.shared.tenantId = resolvedTenant
-                                if let encoded = try? JSONEncoder().encode(user) {
-                                    try? keychain.set(encoded, key: keychainUserKey)
-                                }
-                                self.currentUser = user
-                                self.isAuthenticated = true
-                                self.isLoading = false
-                                return true
-                            }
-                        }
+
+            let found = (saltRes["found"] as? Bool) ?? false
+            if found {
+                let salt = (saltRes["password_salt"] as? String) ?? ""
+                let isPbkdf2 = (saltRes["is_pbkdf2"] as? Bool) ?? true
+                let resolvedTenantFromSalt = (saltRes["tenant_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let computedHash = derivePasswordHash(plain: cleanPass, saltBase64: salt, isPbkdf2: isPbkdf2)
+
+                var verifyParams: [String: Any] = [
+                    "p_identifier": cleanIdentifier,
+                    "p_password_hash": computedHash
+                ]
+                if !resolvedTenantFromSalt.isEmpty {
+                    verifyParams["p_tenant_id"] = resolvedTenantFromSalt
+                }
+
+                let verifyRes = try await SupabaseService.shared.rpcRaw(
+                    function: "verify_user_login_v2",
+                    params: verifyParams
+                )
+
+                if (verifyRes["success"] as? Bool) == true {
+                    let finalUsername = ((verifyRes["username"] as? String) ?? cleanIdentifier).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let finalEmail = ((verifyRes["email"] as? String) ?? "\(finalUsername)@ermay.local").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let finalFullName = ((verifyRes["ad_soyad"] as? String) ?? "").isEmpty ? finalUsername.capitalized : ((verifyRes["ad_soyad"] as? String) ?? finalUsername.capitalized)
+                    let finalRole = (verifyRes["role"] as? String) ?? "Admin"
+                    let rawTenant = ((verifyRes["tenant_id"] as? String) ?? resolvedTenantFromSalt).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let finalTenant = (rawTenant.isEmpty || rawTenant == "default") ? "tenant_ermay_master" : rawTenant
+                    let userId = (verifyRes["user_id"] as? String) ?? (verifyRes["user_uuid"] as? String) ?? UUID().uuidString
+
+                    let user = User(
+                        id: userId,
+                        email: finalEmail,
+                        username: finalUsername,
+                        fullName: finalFullName,
+                        role: finalRole,
+                        tenantId: finalTenant
+                    )
+
+                    SupabaseService.shared.tenantId = finalTenant
+                    if let encoded = try? JSONEncoder().encode(user) {
+                        try? keychain.set(encoded, key: keychainUserKey)
                     }
+                    self.currentUser = user
+                    self.isAuthenticated = true
+                    self.isLoading = false
+                    return true
+                } else {
+                    self.errorMessage = (verifyRes["message"] as? String) ?? "Geçersiz kullanıcı adı/e-posta veya şifre."
+                    self.isLoading = false
+                    return false
                 }
             }
         } catch {
-            print("[AuthService] Supabase kullanıcı kontrolü: \(error)")
+            print("[AuthService] RPC v2 login fallback: \(error)")
         }
-        
-        // 2. Supabase public.kullanicilar tablosundan kontrol
+
+        // 2. Fallback: Direct public.kullanicilar lookup (username OR email, is_deleted=not.is.true)
         do {
             struct RemoteUserRow: Decodable {
                 let id: String?
                 let username: String?
+                let kullanici_adi: String?
                 let password_hash: String?
                 let password_salt: String?
                 let email: String?
+                let eposta: String?
                 let role: String?
                 let tenant_id: String?
+                let is_active: Bool?
+                let aktif_mi: Bool?
+                let is_deleted: Bool?
+
+                enum CodingKeys: String, CodingKey {
+                    case id, username, kullanici_adi, password_hash, password_salt, email, eposta, role, tenant_id, is_active, aktif_mi, is_deleted
+                }
+
+                init(from decoder: Decoder) throws {
+                    let c = try decoder.container(keyedBy: CodingKeys.self)
+                    if let intId = try? c.decode(Int.self, forKey: .id) {
+                        self.id = String(intId)
+                    } else {
+                        self.id = try? c.decode(String.self, forKey: .id)
+                    }
+                    self.username = try? c.decode(String.self, forKey: .username)
+                    self.kullanici_adi = try? c.decode(String.self, forKey: .kullanici_adi)
+                    self.password_hash = try? c.decode(String.self, forKey: .password_hash)
+                    self.password_salt = try? c.decode(String.self, forKey: .password_salt)
+                    self.email = try? c.decode(String.self, forKey: .email)
+                    self.eposta = try? c.decode(String.self, forKey: .eposta)
+                    self.role = try? c.decode(String.self, forKey: .role)
+                    self.tenant_id = try? c.decode(String.self, forKey: .tenant_id)
+                    self.is_active = try? c.decode(Bool.self, forKey: .is_active)
+                    self.aktif_mi = try? c.decode(Bool.self, forKey: .aktif_mi)
+                    self.is_deleted = try? c.decode(Bool.self, forKey: .is_deleted)
+                }
             }
-            
+
+            let escapedIdent = escapePostgrestFilterValue(cleanIdentifier)
             let users: [RemoteUserRow] = try await SupabaseService.shared.fetch(
                 from: "kullanicilar",
-                filters: ["username": "eq.\(cleanUsername)"],
+                filters: [
+                    "or": "(username.ilike.\(escapedIdent),kullanici_adi.ilike.\(escapedIdent),email.ilike.\(escapedIdent),eposta.ilike.\(escapedIdent))",
+                    "is_deleted": "not.is.true"
+                ],
                 applyTenantFilter: false
             )
-            
+
             for matched in users {
+                if matched.is_deleted == true { continue }
+                if matched.is_active == false || matched.aktif_mi == false { continue }
+
                 let storedHash = matched.password_hash ?? ""
                 if storedHash.isEmpty || storedHash.lowercased() == "temporary" { continue }
                 let storedSalt = matched.password_salt
-                let requestedTenant = tenantId.trimmingCharacters(in: .whitespacesAndNewlines)
-                var resolvedTenant = (matched.tenant_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !requestedTenant.isEmpty && requestedTenant != "default" {
-                    resolvedTenant = requestedTenant
-                } else if resolvedTenant.isEmpty || resolvedTenant == "default" {
-                    resolvedTenant = "tenant_ermay_master"
-                }
-                
-                if verifyPassword(plain: cleanPass, storedHash: storedHash, saltBase64: storedSalt) || cleanPass == storedHash {
+                let rawTenant = (matched.tenant_id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolvedTenant = (rawTenant.isEmpty || rawTenant == "default") ? "tenant_ermay_master" : rawTenant
+
+                if verifyPassword(plain: cleanPass, storedHash: storedHash, saltBase64: storedSalt) {
+                    let finalUsername = (matched.username ?? matched.kullanici_adi ?? cleanIdentifier).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let finalEmail = matched.email ?? matched.eposta ?? "\(finalUsername)@ermay.local"
                     let user = User(
                         id: matched.id ?? UUID().uuidString,
-                        email: matched.email ?? "\(cleanUsername)@ermay.local",
-                        username: cleanUsername,
-                        fullName: cleanUsername.capitalized,
+                        email: finalEmail,
+                        username: finalUsername,
+                        fullName: finalUsername.capitalized,
                         role: matched.role ?? "Admin",
                         tenantId: resolvedTenant
                     )
-                    
+
                     SupabaseService.shared.tenantId = resolvedTenant
                     if let encoded = try? JSONEncoder().encode(user) {
                         try? keychain.set(encoded, key: keychainUserKey)
@@ -218,10 +334,10 @@ public final class AuthService: ObservableObject {
                 }
             }
         } catch {
-            print("[AuthService] public.kullanicilar kontrolü: \(error)")
+            print("[AuthService] public.kullanicilar fallback error: \(error)")
         }
-        
-        errorMessage = "Giriş başarısız: Masaüstünde belirlediğiniz kullanıcı adı veya şifre hatalı."
+
+        errorMessage = "Giriş başarısız: Kullanıcı adı/e-posta veya şifre hatalı."
         isLoading = false
         return false
     }

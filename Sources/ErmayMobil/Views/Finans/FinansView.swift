@@ -339,7 +339,7 @@ public struct FinansView: View {
             }
         }
         .sheet(isPresented: $showKasaSayim) {
-            KasaSayimView(sistemBakiye: kasaToplam)
+            KasaSayimView(sistemBakiye: kasalar.first?.bakiye ?? kasaToplam, kasalar: kasalar)
         }
         .sheet(isPresented: $showYeniKasaSheet) {
             yeniKasaModal()
@@ -427,7 +427,7 @@ public struct FinansView: View {
                 showKasaSayim = true
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "Calculator")
+                    Image(systemName: "plus.forwardslash.minus")
                     Image(systemName: "banknote")
                     Text("Kasa Sayım")
                 }
@@ -679,7 +679,7 @@ public struct FinansView: View {
     @ViewBuilder
     private func renderCeklerTab() -> some View {
         HStack {
-            Text("Çek & Senet Portföyü (\(cekler.count))")
+            Text("Çek & Senet Portföyü (\(cekler.count + senetler.count))")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(.white)
             Spacer()
@@ -695,7 +695,7 @@ public struct FinansView: View {
             }
         }
         
-        if cekler.isEmpty {
+        if cekler.isEmpty && senetler.isEmpty {
             emptyStateBox(text: "Kayıtlı çek veya senet bulunmuyor.")
         } else {
             ForEach(cekler) { c in
@@ -720,6 +720,38 @@ public struct FinansView: View {
                             .foregroundColor(Color(hex: "8E8E93"))
                         Spacer()
                         Text(AppFormatters.money(c.tutar))
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundColor(Color(hex: "10B981"))
+                    }
+                }
+                .padding(14)
+                .background(Color(hex: "121216"))
+                .cornerRadius(14)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            }
+            
+            ForEach(senetler) { s in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(s.cariUnvan ?? s.borclu ?? "Senet Kaydı")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                        Spacer()
+                        Text(s.durum)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(Color(hex: "60A5FA"))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color(hex: "60A5FA").opacity(0.15))
+                            .cornerRadius(6)
+                    }
+                    
+                    HStack {
+                        Text("SENET • No: \(s.senetNo ?? "-") • Vade: \(String(s.vadeTarihi.prefix(10)))")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(hex: "8E8E93"))
+                        Spacer()
+                        Text(AppFormatters.money(s.tutar))
                             .font(.system(size: 15, weight: .heavy))
                             .foregroundColor(Color(hex: "10B981"))
                     }
@@ -907,7 +939,7 @@ public struct FinansView: View {
                     Button {
                         guard !yeniKasaAdi.isEmpty else { return }
                         let b = Double(yeniKasaAcilis.replacingOccurrences(of: ",", with: ".")) ?? 0.0
-                        let newK = KasaBanka(id: String(IdGenerator.generateMobileRecordId()), hesapAdi: yeniKasaAdi, hesapTuru: "KASA", dovizCinsi: yeniKasaDoviz, bakiye: b)
+                        let newK = KasaBanka(id: "", hesapAdi: yeniKasaAdi, hesapTuru: "KASA", dovizCinsi: yeniKasaDoviz, bakiye: b)
                         kasalar.append(newK)
                         Task {
                             try? await SupabaseService.shared.insert(into: "kasalar", item: newK)
@@ -953,7 +985,7 @@ public struct FinansView: View {
                     Button {
                         guard !yeniBankaAdi.isEmpty else { return }
                         let b = Double(yeniBankaAcilis.replacingOccurrences(of: ",", with: ".")) ?? 0.0
-                        let newB = BankaKart(id: IdGenerator.generateMobileRecordId(), bankaAdi: yeniBankaAdi, subeAdi: yeniBankaSube, hesapNo: yeniBankaIban, iban: yeniBankaIban, dovizTuru: yeniBankaDoviz, bakiye: b)
+                        let newB = BankaKart(id: nil, bankaAdi: yeniBankaAdi, subeAdi: yeniBankaSube, hesapNo: yeniBankaIban, iban: yeniBankaIban, dovizTuru: yeniBankaDoviz, bakiye: b)
                         bankalar.append(newB)
                         Task {
                             try? await SupabaseService.shared.insert(into: "bankalar", item: newB)
@@ -1016,12 +1048,14 @@ public struct FinansView: View {
                         
                         Button {
                             guard let t = Double(yeniCekTutar.replacingOccurrences(of: ",", with: ".")), t > 0 else { return }
+                            let todayIso = AppFormatters.isoDate.string(from: Date())
+                            let cekBelgeNo = yeniCekNo.isEmpty ? "MB-CK-\(Int.random(in: 100...999))" : yeniCekNo
                             let newCek = Cek(
-                                id: String(IdGenerator.generateMobileRecordId()),
-                                cekNo: yeniCekNo.isEmpty ? "MB-CK-\(Int.random(in: 100...999))" : yeniCekNo,
+                                id: "",
+                                cekNo: cekBelgeNo,
                                 cariId: Int(yeniCekCari?.id ?? ""),
                                 cariUnvan: yeniCekCari?.unvan ?? "Müşteri",
-                                islemTarihi: AppFormatters.isoDate.string(from: Date()),
+                                islemTarihi: todayIso,
                                 portfoyNo: yeniCekNo,
                                 vadeTarihi: AppFormatters.isoDate.string(from: yeniCekVade),
                                 tutar: t,
@@ -1031,9 +1065,44 @@ public struct FinansView: View {
                                 cekTuru: yeniCekTuru,
                                 durum: "Portföyde"
                             )
+                            let selectedCari = yeniCekCari
+                            let isVerilen = yeniCekTuru.localizedCaseInsensitiveContains("verilen")
                             cekler.insert(newCek, at: 0)
                             Task {
                                 try? await SupabaseService.shared.insert(into: "cekler", item: newCek)
+                                if let c = selectedCari {
+                                    let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+                                    let borcVal = isVerilen ? t : 0.0
+                                    let alacakVal = isVerilen ? 0.0 : t
+                                    let newSigned = c.signedBakiye + (borcVal - alacakVal)
+                                    var chPayload: [String: Any] = [
+                                        "uuid": UUID().uuidString.lowercased(),
+                                        "tenant_id": SupabaseService.shared.tenantId,
+                                        "mali_yil": activeYearInt,
+                                        "cari_unvan": c.unvan,
+                                        "evrak_no": cekBelgeNo,
+                                        "belge_no": cekBelgeNo,
+                                        "islem_turu": isVerilen ? "Ödeme (Çek)" : "Tahsilat (Çek)",
+                                        "hareket_turu": isVerilen ? "Ödeme" : "Tahsilat",
+                                        "odeme_sekli": "Çek",
+                                        "borc": borcVal,
+                                        "alacak": alacakVal,
+                                        "bakiye": newSigned,
+                                        "tarih": todayIso,
+                                        "aciklama": "Çek Girişi (\(cekBelgeNo))",
+                                        "is_deleted": false
+                                    ]
+                                    if let cIdInt = Int(c.id) { chPayload["cari_id"] = cIdInt }
+                                    if let cUuid = c.syncGuid { chPayload["cari_uuid"] = cUuid }
+                                    if let chData = try? JSONSerialization.data(withJSONObject: chPayload) {
+                                        try? await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: chData)
+                                    }
+                                    try? await SupabaseService.shared.update(
+                                        table: "cariler",
+                                        id: c.id,
+                                        item: CariBakiyeUpdate(bakiye: newSigned, bakiyeTuru: newSigned >= 0 ? "B" : "A")
+                                    )
+                                }
                                 await loadFinansData()
                             }
                             yeniCekTutar = ""
@@ -1104,13 +1173,15 @@ public struct FinansView: View {
                         
                         Button {
                             guard let t = Double(yeniKKTutar.replacingOccurrences(of: ",", with: ".")), t > 0 else { return }
+                            let todayIso = AppFormatters.isoDate.string(from: Date())
+                            let kkEvrakNo = yeniKKOnayKodu.isEmpty ? "MB-KK-\(Int.random(in: 1000...9999))" : yeniKKOnayKodu
                             let item = KrediKartiIslem(
-                                id: String(IdGenerator.generateMobileRecordId()),
+                                id: "",
                                 musteriId: Int(yeniKKCari?.id ?? ""),
                                 musteriUnvan: yeniKKCari?.unvan ?? "Müşteri",
                                 yonlendirilenCariId: Int(yeniKKYonlendirilenCari?.id ?? ""),
                                 yonlendirilenCariUnvan: yeniKKYonlendirilenCari?.unvan,
-                                tarih: AppFormatters.isoDate.string(from: Date()),
+                                tarih: todayIso,
                                 tutar: t,
                                 banka: yeniKKBanka,
                                 kartNo: yeniKKKartNo,
@@ -1118,9 +1189,68 @@ public struct FinansView: View {
                                 durum: yeniKKYonlendirilenCari != nil ? "Yönlendirildi" : "Portföyde",
                                 aciklama: yeniKKAciklama
                             )
+                            let selectedCari = yeniKKCari
+                            let selectedYonCari = yeniKKYonlendirilenCari
+                            let targetBanka = bankalar.first(where: { $0.bankaAdi.localizedCaseInsensitiveContains(yeniKKBanka) }) ?? bankalar.first
                             kkIslemler.insert(item, at: 0)
                             Task {
+                                let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
                                 try? await SupabaseService.shared.insert(into: "kredi_karti_islemler", item: item)
+                                if let c = selectedCari {
+                                    let newSigned = c.signedBakiye - t
+                                    var chPayload: [String: Any] = [
+                                        "uuid": UUID().uuidString.lowercased(),
+                                        "tenant_id": SupabaseService.shared.tenantId,
+                                        "mali_yil": activeYearInt,
+                                        "cari_unvan": c.unvan,
+                                        "evrak_no": kkEvrakNo,
+                                        "belge_no": kkEvrakNo,
+                                        "islem_turu": "Tahsilat (Kredi Kartı)",
+                                        "hareket_turu": "Tahsilat",
+                                        "odeme_sekli": "Kredi Kartı",
+                                        "borc": 0.0,
+                                        "alacak": t,
+                                        "bakiye": newSigned,
+                                        "tarih": todayIso,
+                                        "aciklama": yeniKKAciklama.isEmpty ? "Kredi Kartı Tahsilatı" : yeniKKAciklama,
+                                        "is_deleted": false
+                                    ]
+                                    if let cIdInt = Int(c.id) { chPayload["cari_id"] = cIdInt }
+                                    if let cUuid = c.syncGuid { chPayload["cari_uuid"] = cUuid }
+                                    if let chData = try? JSONSerialization.data(withJSONObject: chPayload) {
+                                        try? await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: chData)
+                                    }
+                                    try? await SupabaseService.shared.update(
+                                        table: "cariler",
+                                        id: c.id,
+                                        item: CariBakiyeUpdate(bakiye: newSigned, bakiyeTuru: newSigned >= 0 ? "B" : "A")
+                                    )
+                                }
+                                if selectedYonCari == nil, let b = targetBanka {
+                                    var bhPayload: [String: Any] = [
+                                        "uuid": UUID().uuidString.lowercased(),
+                                        "tenant_id": SupabaseService.shared.tenantId,
+                                        "mali_yil": activeYearInt,
+                                        "banka_id": b.id ?? 1,
+                                        "cari_unvan": selectedCari?.unvan ?? "Müşteri",
+                                        "evrak_no": kkEvrakNo,
+                                        "belge_no": kkEvrakNo,
+                                        "islem_turu": "TAHSILAT",
+                                        "hareket_turu": "Tahsilat",
+                                        "giren": t,
+                                        "cikan": 0.0,
+                                        "yatan": t,
+                                        "ceken": 0.0,
+                                        "tutar": t,
+                                        "tarih": todayIso,
+                                        "aciklama": yeniKKAciklama.isEmpty ? "POS / Kredi Kartı Tahsilatı" : yeniKKAciklama,
+                                        "is_deleted": false
+                                    ]
+                                    if let cIdStr = selectedCari?.id, let cIdInt = Int(cIdStr) { bhPayload["cari_id"] = cIdInt }
+                                    if let bhData = try? JSONSerialization.data(withJSONObject: bhPayload) {
+                                        try? await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bhData)
+                                    }
+                                }
                                 await loadFinansData()
                             }
                             yeniKKTutar = ""
@@ -1195,8 +1325,10 @@ public struct FinansView: View {
                         
                         Button {
                             guard let t = Double(yeniEftTutar.replacingOccurrences(of: ",", with: ".")), t > 0 else { return }
+                            let todayIso = AppFormatters.isoDate.string(from: Date())
+                            let eftEvrakNo = yeniEftDekontNo.isEmpty ? "MB-EFT-\(Int.random(in: 1000...9999))" : yeniEftDekontNo
                             let item = EftIslem(
-                                id: String(IdGenerator.generateMobileRecordId()),
+                                id: "",
                                 musteriId: Int(yeniEftCari?.id ?? ""),
                                 banka: yeniEftBanka,
                                 hesapNo: yeniEftHesapNo,
@@ -1206,13 +1338,72 @@ public struct FinansView: View {
                                 yonlendirilenCariId: Int(yeniEftYonlendirilenCari?.id ?? ""),
                                 yonlendirilenCariUnvan: yeniEftYonlendirilenCari?.unvan,
                                 tutar: t,
-                                tarih: AppFormatters.isoDate.string(from: Date()),
+                                tarih: todayIso,
                                 aciklama: yeniEftAciklama,
                                 durum: yeniEftYonlendirilenCari != nil ? "Yönlendirildi" : "Tamamlandı"
                             )
+                            let selectedCari = yeniEftCari
+                            let selectedYonCari = yeniEftYonlendirilenCari
+                            let targetBanka = bankalar.first(where: { $0.bankaAdi.localizedCaseInsensitiveContains(yeniEftBanka) }) ?? bankalar.first
                             eftIslemler.insert(item, at: 0)
                             Task {
+                                let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
                                 try? await SupabaseService.shared.insert(into: "eft_islemler", item: item)
+                                if let c = selectedCari {
+                                    let newSigned = c.signedBakiye - t
+                                    var chPayload: [String: Any] = [
+                                        "uuid": UUID().uuidString.lowercased(),
+                                        "tenant_id": SupabaseService.shared.tenantId,
+                                        "mali_yil": activeYearInt,
+                                        "cari_unvan": c.unvan,
+                                        "evrak_no": eftEvrakNo,
+                                        "belge_no": eftEvrakNo,
+                                        "islem_turu": "Tahsilat (Havale / EFT)",
+                                        "hareket_turu": "Tahsilat",
+                                        "odeme_sekli": "Havale / EFT",
+                                        "borc": 0.0,
+                                        "alacak": t,
+                                        "bakiye": newSigned,
+                                        "tarih": todayIso,
+                                        "aciklama": yeniEftAciklama.isEmpty ? "Havale / EFT Tahsilatı" : yeniEftAciklama,
+                                        "is_deleted": false
+                                    ]
+                                    if let cIdInt = Int(c.id) { chPayload["cari_id"] = cIdInt }
+                                    if let cUuid = c.syncGuid { chPayload["cari_uuid"] = cUuid }
+                                    if let chData = try? JSONSerialization.data(withJSONObject: chPayload) {
+                                        try? await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: chData)
+                                    }
+                                    try? await SupabaseService.shared.update(
+                                        table: "cariler",
+                                        id: c.id,
+                                        item: CariBakiyeUpdate(bakiye: newSigned, bakiyeTuru: newSigned >= 0 ? "B" : "A")
+                                    )
+                                }
+                                if selectedYonCari == nil, let b = targetBanka {
+                                    var bhPayload: [String: Any] = [
+                                        "uuid": UUID().uuidString.lowercased(),
+                                        "tenant_id": SupabaseService.shared.tenantId,
+                                        "mali_yil": activeYearInt,
+                                        "banka_id": b.id ?? 1,
+                                        "cari_unvan": selectedCari?.unvan ?? "Müşteri",
+                                        "evrak_no": eftEvrakNo,
+                                        "belge_no": eftEvrakNo,
+                                        "islem_turu": "TAHSILAT",
+                                        "hareket_turu": "Tahsilat",
+                                        "giren": t,
+                                        "cikan": 0.0,
+                                        "yatan": t,
+                                        "ceken": 0.0,
+                                        "tutar": t,
+                                        "tarih": todayIso,
+                                        "aciklama": yeniEftAciklama.isEmpty ? "Havale / EFT Tahsilatı" : yeniEftAciklama,
+                                        "is_deleted": false
+                                    ]
+                                    if let cIdStr = selectedCari?.id, let cIdInt = Int(cIdStr) { bhPayload["cari_id"] = cIdInt }
+                                    if let bhData = try? JSONSerialization.data(withJSONObject: bhPayload) {
+                                        try? await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bhData)
+                                    }
+                                }
                                 await loadFinansData()
                             }
                             yeniEftTutar = ""

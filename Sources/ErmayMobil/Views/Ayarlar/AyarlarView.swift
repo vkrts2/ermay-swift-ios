@@ -22,7 +22,7 @@ public struct AyarlarView: View {
     // 1. Bulut ve API (Supabase / Firebase / QuestPDF)
     @State private var dbUrl: String = SupabaseService.shared.baseUrl
     @State private var secretKey: String = SupabaseService.shared.anonKey
-    @State private var pdfServerUrl: String = "https://ermay-pdf-api-390930978984.europe-west1.run.app"
+    @State private var pdfServerUrl: String = PDFService.shared.cloudPdfUrl
     @State private var pingStatus: String = "Bulut Aktif • Canlı Senkronizasyon"
     @State private var isTestingPing: Bool = false
     
@@ -65,7 +65,6 @@ public struct AyarlarView: View {
     // 3. Güvenlik ve Kilit
     @State private var lockTimeout: String = "30"
     @State private var newPin: String = ""
-    @State private var isPinSet: Bool = true
     
     // 4. Yedekleme & Geri Yükleme
     @State private var backupJsonInput: String = ""
@@ -76,8 +75,8 @@ public struct AyarlarView: View {
     @State private var activeYear: String = SupabaseService.shared.activeFiscalYear
     @State private var availableYears: [String] = SupabaseService.shared.availableFiscalYears
     @State private var newYearInput: String = ""
-    @State private var devirKaynakYil: String = "2025"
-    @State private var devirHedefYil: String = "2026"
+    @State private var devirKaynakYil: String = String(Calendar.current.component(.year, from: Date()) - 1)
+    @State private var devirHedefYil: String = String(Calendar.current.component(.year, from: Date()))
     @State private var devirCariSecili: Bool = true
     @State private var devirKasaSecili: Bool = true
     @State private var devirBankaSecili: Bool = true
@@ -273,7 +272,11 @@ public struct AyarlarView: View {
                     confirmAction = {
                         dbUrl = ""
                         secretKey = ""
-                        activeYear = "2026"
+                        activeYear = String(Calendar.current.component(.year, from: Date()))
+                        lockService.setPin(nil)
+                        lockService.setBiometricsEnabled(false)
+                        authService.logout()
+                        SupabaseService.shared.clearConfiguration()
                         alertMessage = "Uygulama başarıyla fabrika ayarlarına döndürüldü."
                         showAlert = true
                     }
@@ -523,26 +526,40 @@ public struct AyarlarView: View {
     // MARK: - 3. Güvenlik ve Kilit
     @ViewBuilder
     private func renderSecurityCategory() -> some View {
+        let pinConfigured = !(lockService.pinCode?.isEmpty ?? true)
         VStack(alignment: .leading, spacing: 16) {
             settingCard(title: "Oturum Kilidi PIN Ayarları", icon: "lock.shield.fill", color: Color(hex: "EF4444")) {
                 HStack {
                     Text("Durum:").font(.system(size: 13)).foregroundColor(Color(hex: "94A3B8"))
-                    Text(isPinSet ? "Kilit Aktif (PIN Korunuyor)" : "Kilit Kapalı")
+                    Text(pinConfigured || lockService.isBiometricsEnabled ? "Kilit Aktif (PIN / Biyometrik Korunuyor)" : "Kilit Kapalı")
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(isPinSet ? Color(hex: "10B981") : Color(hex: "EF4444"))
+                        .foregroundColor(pinConfigured || lockService.isBiometricsEnabled ? Color(hex: "10B981") : Color(hex: "EF4444"))
                     Spacer()
                 }
+                
+                Toggle("Face ID / Touch ID ile Kilit Aç", isOn: Binding(
+                    get: { lockService.isBiometricsEnabled },
+                    set: { lockService.setBiometricsEnabled($0) }
+                ))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
                 
                 inputField(label: "Zaman Aşımı (Dakika)", text: $lockTimeout, placeholder: "30")
                 inputField(label: "Yeni Kilit PIN (4-6 hane)", text: $newPin, placeholder: "PIN girin...", isSecure: true)
                 
                 Button {
-                    isPinSet = true
+                    let trimmedPin = newPin.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard trimmedPin.count >= 4 else {
+                        alertMessage = "Lütfen en az 4 haneli bir PIN kodu giriniz."
+                        showAlert = true
+                        return
+                    }
+                    lockService.setPin(trimmedPin)
                     newPin = ""
                     alertMessage = "PIN ve oturum zaman aşımı (\(lockTimeout) dk) başarıyla güncellendi."
                     showAlert = true
                 } label: {
-                    Text(isPinSet ? "PIN ve Süreyi Güncelle" : "PIN Tanımla ve Aktifleştir")
+                    Text(pinConfigured ? "PIN ve Süreyi Güncelle" : "PIN Tanımla ve Aktifleştir")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
@@ -551,9 +568,10 @@ public struct AyarlarView: View {
                         .cornerRadius(10)
                 }
                 
-                if isPinSet {
+                if pinConfigured || lockService.isBiometricsEnabled {
                     Button {
-                        isPinSet = false
+                        lockService.setPin(nil)
+                        lockService.setBiometricsEnabled(false)
                         alertMessage = "Oturum kilidi kaldırıldı."
                         showAlert = true
                     } label: {
@@ -586,9 +604,9 @@ public struct AyarlarView: View {
                     .foregroundColor(Color(hex: "94A3B8"))
                 
                 Button {
-                    let cachedCariler = LocalDatabaseService.shared.getCachedCariler()
-                    let cachedStoklar = LocalDatabaseService.shared.getCachedStoklar()
-                    let cachedFaturalar = LocalDatabaseService.shared.getCachedFaturalar()
+                    let cachedCariler = DataStore.shared.cariler
+                    let cachedStoklar = DataStore.shared.stoklar
+                    let cachedFaturalar = DataStore.shared.faturalar
                     backupShareContent = """
                     {
                       "app": "Ermay Muhasebe",
@@ -671,6 +689,7 @@ public struct AyarlarView: View {
                             activeYear = yr
                             Task {
                                 await SupabaseService.shared.setActiveFiscalYear(yr)
+                                await DataStore.shared.syncAll()
                             }
                             alertMessage = "Aktif çalışma yılı \(yr) olarak ayarlandı."
                             showAlert = true
@@ -705,6 +724,7 @@ public struct AyarlarView: View {
                                 await SupabaseService.shared.createFiscalYear(trimmed)
                                 self.availableYears = SupabaseService.shared.availableFiscalYears
                                 self.activeYear = SupabaseService.shared.activeFiscalYear
+                                await DataStore.shared.syncAll()
                             }
                             alertMessage = trimmed + " mali yılı başarıyla oluşturuldu."
                             showAlert = true
@@ -786,9 +806,9 @@ public struct AyarlarView: View {
                 
                 Button {
                     Task {
-                        await OfflineQueueService.shared.processQueue()
+                        await DataStore.shared.loadAll(force: true)
                         await MainActor.run {
-                            alertMessage = "Çevrimdışı kuyruk eşitlendi. Bulut veritabanındaki silinmiş (soft-deleted) kayıtların kalıcı temizliği veri güvenliği için Masaüstü Ana Sunucu üzerinden gerçekleştirilmelidir."
+                            alertMessage = "Veriler Supabase üzerinden yenilendi. Bulut veritabanındaki silinmiş (soft-deleted) kayıtların kalıcı temizliği veri güvenliği için Masaüstü uygulaması üzerinden gerçekleştirilmelidir."
                             showAlert = true
                         }
                     }

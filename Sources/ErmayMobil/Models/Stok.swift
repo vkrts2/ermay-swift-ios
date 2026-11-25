@@ -46,7 +46,9 @@ public struct StokKart: Identifiable, Codable, Hashable {
         case kategori
         case birim
         case alisFiyati = "alis_fiyati"
+        case ortalamaAlisFiyati = "ortalama_alis_fiyati"
         case satisFiyati = "satis_fiyati"
+        case ortalamaSatisFiyati = "ortalama_satis_fiyati"
         case kdvOrani = "kdv_orani"
         case kdv
         case mevcutMiktar = "mevcut_miktar"
@@ -191,13 +193,20 @@ public struct StokKart: Identifiable, Codable, Hashable {
         try container.encode(stokAdi, forKey: .stokAdi)
         try container.encodeIfPresent(barkod, forKey: .barkod)
         try container.encodeIfPresent(grupAdi, forKey: .grupAdi)
+        try container.encodeIfPresent(grupAdi, forKey: .grup)
         try container.encodeIfPresent(grupAdi, forKey: .kategori)
         try container.encodeIfPresent(birim, forKey: .birim)
         try container.encode(alisFiyati, forKey: .alisFiyati)
+        try container.encode(alisFiyati, forKey: .ortalamaAlisFiyati)
         try container.encode(satisFiyati, forKey: .satisFiyati)
+        try container.encode(satisFiyati, forKey: .ortalamaSatisFiyati)
         try container.encode(kdvOrani, forKey: .kdvOrani)
+        try container.encode(kdvOrani, forKey: .kdv)
         try container.encode(mevcutMiktar, forKey: .mevcutMiktar)
+        try container.encode(mevcutMiktar, forKey: .miktar)
         try container.encodeIfPresent(kritikMiktar, forKey: .kritikMiktar)
+        try container.encodeIfPresent(kritikMiktar, forKey: .kritikStok)
+        try container.encodeIfPresent(kritikMiktar, forKey: .kritikSeviye)
         try container.encodeIfPresent(aciklama, forKey: .aciklama)
         try container.encode(aktif ?? true, forKey: .aktif)
         try container.encode(aktif ?? true, forKey: .isActive)
@@ -249,6 +258,8 @@ public struct StokHareket: Identifiable, Codable, Hashable {
         case faturaId = "fatura_id"
         case cariId = "cari_id"
         case cariUnvan = "cari_unvan"
+        case tenantId = "tenant_id"
+        case maliYil = "mali_yil"
         case syncGuid = "sync_guid"
         case uuid
     }
@@ -360,6 +371,14 @@ public struct StokHareket: Identifiable, Codable, Hashable {
         let finalUuid = syncGuid ?? (Int(id) == nil ? id : UUID().uuidString)
         try container.encode(finalUuid, forKey: .uuid)
         try container.encode(stokId, forKey: .stokId)
+        try container.encodeIfPresent(stokAdi, forKey: .stokAdi)
+        try container.encodeIfPresent(stokKodu, forKey: .stokKodu)
+        let upper = (islemTuru ?? "GİRİŞ").uppercased()
+        let isOut = upper.contains("ÇIKIŞ") || upper.contains("CIKIS") || upper.contains("SATIŞ") || upper.contains("SATIS") || upper.contains("EKSIG")
+        let resolvedGiren = giren > 0 ? giren : (!isOut ? miktar : 0.0)
+        let resolvedCikan = cikan > 0 ? cikan : (isOut ? miktar : 0.0)
+        try container.encode(resolvedGiren, forKey: .giren)
+        try container.encode(resolvedCikan, forKey: .cikan)
         try container.encodeIfPresent(tarih, forKey: .tarih)
         try container.encodeIfPresent(islemTuru, forKey: .islemTuru)
         try container.encode(miktar, forKey: .miktar)
@@ -370,6 +389,9 @@ public struct StokHareket: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(faturaId, forKey: .faturaId)
         try container.encodeIfPresent(cariId, forKey: .cariId)
         try container.encodeIfPresent(cariUnvan, forKey: .cariUnvan)
+        try container.encode(SupabaseService.shared.tenantId, forKey: .tenantId)
+        let fiscalYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+        try container.encode(fiscalYearInt, forKey: .maliYil)
         try container.encodeIfPresent(syncGuid, forKey: .syncGuid)
     }
 }

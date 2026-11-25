@@ -130,6 +130,7 @@ public struct KasaHareket: Identifiable, Codable, Hashable {
     public var yonlendirilenCariUnvan: String? = nil
     public var syncGuid: String?
     public var tenantId: String?
+    public var maliYil: Int? = nil
     
     // M-02 UYUMLULUK ALIAS'LARI (PostgreSQL & Desktop Eşleştirmesi):
     public var kasaId: String? {
@@ -163,6 +164,7 @@ public struct KasaHareket: Identifiable, Codable, Hashable {
         case yonlendirilenCariUnvan = "yonlendirilen_cari_unvan"
         case syncGuid = "sync_guid"
         case tenantId = "tenant_id"
+        case maliYil = "mali_yil"
     }
     
     public init(
@@ -281,6 +283,7 @@ public struct KasaHareket: Identifiable, Codable, Hashable {
         self.yonlendirilenCariUnvan = try? c.decode(String.self, forKey: .yonlendirilenCariUnvan)
         self.syncGuid = (try? c.decode(String.self, forKey: .syncGuid)) ?? self.uuid
         self.tenantId = try? c.decode(String.self, forKey: .tenantId)
+        self.maliYil = try? c.decode(Int.self, forKey: .maliYil)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -310,6 +313,8 @@ public struct KasaHareket: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(yonlendirilenCariId, forKey: .yonlendirilenCariId)
         try c.encodeIfPresent(yonlendirilenCariUnvan, forKey: .yonlendirilenCariUnvan)
         try c.encodeIfPresent(tenantId ?? SupabaseService.shared.tenantId, forKey: .tenantId)
+        let resolvedYear = maliYil ?? Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+        try c.encode(resolvedYear, forKey: .maliYil)
     }
 }
 

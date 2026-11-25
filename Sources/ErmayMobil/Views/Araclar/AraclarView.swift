@@ -35,7 +35,7 @@ public struct BelgeArsivKayit: Identifiable, Codable, Hashable {
     }
     
     public init(
-        id: String = String(IdGenerator.generateMobileRecordId()),
+        id: String = UUID().uuidString,
         uuid: String = UUID().uuidString,
         ad: String,
         kategori: String = "Resmi Belge",
@@ -149,7 +149,7 @@ public struct PortfoyKartKayit: Identifiable, Codable, Hashable {
     }
     
     public init(
-        id: String = String(IdGenerator.generateMobileRecordId()),
+        id: String = UUID().uuidString,
         uuid: String = UUID().uuidString,
         firmaIsmi: String,
         cariTipi: String = "Müşteri",
@@ -1147,7 +1147,7 @@ public struct AraclarView: View {
             // 1. Stok Hareketlerini Aktar
             let shPayload: [String: Any] = [
                 "stok_id": dstIdInt,
-                "stok_kodu": dst.stokKodu,
+                "stok_kodu": dst.stokKodu ?? "",
                 "stok_adi": dst.stokAdi
             ]
             if let d = try? JSONSerialization.data(withJSONObject: shPayload) {
@@ -1157,7 +1157,7 @@ public struct AraclarView: View {
             // 2. Fatura Kalemlerini Aktar
             let fdPayload: [String: Any] = [
                 "stok_id": dstIdInt,
-                "stok_kodu": dst.stokKodu,
+                "stok_kodu": dst.stokKodu ?? "",
                 "stok_adi": dst.stokAdi
             ]
             if let d = try? JSONSerialization.data(withJSONObject: fdPayload) {
@@ -1626,32 +1626,92 @@ public struct AraclarView: View {
     private func saveBudgetTargetsToSupabase(annualTarget: Double) {
         isSavingBudget = true
         Task {
-            let yPayload: [String: Any] = [
-                "id": IdGenerator.generateMobileRecordId(),
-                "uuid": UUID().uuidString,
-                "tenant_id": SupabaseService.shared.tenantId,
-                "yil": seciliButceYili,
-                "hedef_tutar": annualTarget,
-                "hedef_tutari": annualTarget,
-                "is_deleted": false
-            ]
-            if let d = try? JSONSerialization.data(withJSONObject: yPayload) {
-                try? await SupabaseService.shared.insertRaw(into: "yillik_satis_hedefleri", data: d)
+            struct ExistingTargetRow: Decodable {
+                let id: Int?
+                let uuid: String?
+                let ay: Int?
+                
+                enum CodingKeys: String, CodingKey {
+                    case id, uuid, ay
+                }
+                init(from decoder: Decoder) throws {
+                    let c = try decoder.container(keyedBy: CodingKeys.self)
+                    if let intId = try? c.decode(Int.self, forKey: .id) {
+                        self.id = intId
+                    } else if let strId = try? c.decode(String.self, forKey: .id), let parsed = Int(strId) {
+                        self.id = parsed
+                    } else {
+                        self.id = nil
+                    }
+                    self.uuid = try? c.decode(String.self, forKey: .uuid)
+                    self.ay = try? c.decode(Int.self, forKey: .ay)
+                }
             }
-            for m in aylikButceler {
-                let mPayload: [String: Any] = [
-                    "id": IdGenerator.generateMobileRecordId(),
-                    "uuid": UUID().uuidString,
-                    "tenant_id": SupabaseService.shared.tenantId,
-                    "yil": seciliButceYili,
-                    "ay": m.id,
-                    "hedef_tutar": m.hedef,
-                    "hedef_tutari": m.hedef,
-                    "gerceklesen_tutar": m.gerceklesen,
+            
+            let tenant = SupabaseService.shared.tenantId
+            
+            // 1. Yıllık hedef: mevcut kayıt varsa güncelle, yoksa ekle
+            let existingYearly: [ExistingTargetRow] = (try? await SupabaseService.shared.fetch(
+                from: "yillik_satis_hedefleri",
+                filters: ["yil": "eq.\(seciliButceYili)"]
+            )) ?? []
+            
+            if let existing = existingYearly.first {
+                let updateDict: [String: Any] = [
+                    "hedef_tutar": annualTarget,
+                    "hedef_tutari": annualTarget,
                     "is_deleted": false
                 ]
-                if let d = try? JSONSerialization.data(withJSONObject: mPayload) {
-                    try? await SupabaseService.shared.insertRaw(into: "satis_hedefleri", data: d)
+                if let d = try? JSONSerialization.data(withJSONObject: updateDict) {
+                    let recId = existing.id != nil ? String(existing.id!) : (existing.uuid ?? "yillik_hedef_\(tenant)_\(seciliButceYili)")
+                    try? await SupabaseService.shared.updateRaw(table: "yillik_satis_hedefleri", id: recId, data: d)
+                }
+            } else {
+                let yPayload: [String: Any] = [
+                    "uuid": "yillik_hedef_\(tenant)_\(seciliButceYili)",
+                    "tenant_id": tenant,
+                    "yil": seciliButceYili,
+                    "hedef_tutar": annualTarget,
+                    "hedef_tutari": annualTarget,
+                    "is_deleted": false
+                ]
+                if let d = try? JSONSerialization.data(withJSONObject: yPayload) {
+                    try? await SupabaseService.shared.upsertRaw(into: "yillik_satis_hedefleri", data: d, onConflict: "uuid")
+                }
+            }
+            
+            // 2. Aylık hedefler: mevcut kayıt varsa güncelle, yoksa ekle
+            let existingMonthly: [ExistingTargetRow] = (try? await SupabaseService.shared.fetch(
+                from: "satis_hedefleri",
+                filters: ["yil": "eq.\(seciliButceYili)"]
+            )) ?? []
+            
+            for m in aylikButceler {
+                if let existingM = existingMonthly.first(where: { $0.ay == m.id }) {
+                    let updateDict: [String: Any] = [
+                        "hedef_tutar": m.hedef,
+                        "hedef_tutari": m.hedef,
+                        "gerceklesen_tutar": m.gerceklesen,
+                        "is_deleted": false
+                    ]
+                    if let d = try? JSONSerialization.data(withJSONObject: updateDict) {
+                        let recId = existingM.id != nil ? String(existingM.id!) : (existingM.uuid ?? "satis_hedef_\(tenant)_\(seciliButceYili)_\(m.id)")
+                        try? await SupabaseService.shared.updateRaw(table: "satis_hedefleri", id: recId, data: d)
+                    }
+                } else {
+                    let mPayload: [String: Any] = [
+                        "uuid": "satis_hedef_\(tenant)_\(seciliButceYili)_\(m.id)",
+                        "tenant_id": tenant,
+                        "yil": seciliButceYili,
+                        "ay": m.id,
+                        "hedef_tutar": m.hedef,
+                        "hedef_tutari": m.hedef,
+                        "gerceklesen_tutar": m.gerceklesen,
+                        "is_deleted": false
+                    ]
+                    if let d = try? JSONSerialization.data(withJSONObject: mPayload) {
+                        try? await SupabaseService.shared.upsertRaw(into: "satis_hedefleri", data: d, onConflict: "uuid")
+                    }
                 }
             }
             await MainActor.run {
@@ -1756,7 +1816,7 @@ public struct AraclarView: View {
     private func transferPortfoyToCari(_ p: PortfoyKartKayit) {
         Task {
             let newCari = CariKart(
-                id: String(IdGenerator.generateMobileRecordId()),
+                id: UUID().uuidString,
                 cariKodu: "MB-CR-\(Int.random(in: 100...999))",
                 unvan: p.firmaIsmi,
                 cariTuru: p.cariTipi,
@@ -1775,11 +1835,17 @@ public struct AraclarView: View {
                 riskLimiti: p.riskLimiti,
                 vadeGunu: p.vadeGunu
             )
-            await DataStore.shared.saveCari(newCari, isUpdate: false)
-            try? await SupabaseService.shared.delete(table: "portfoy_kartlar", id: p.id)
-            await MainActor.run {
-                portfoyler.removeAll { $0.id == p.id }
-                statusBanner = "'\(p.firmaIsmi)' başarıyla Cari Hesaplara aktarıldı!"
+            do {
+                try await DataStore.shared.saveCari(newCari, isUpdate: false)
+                try await SupabaseService.shared.delete(table: "portfoy_kartlar", id: p.id)
+                await MainActor.run {
+                    portfoyler.removeAll { $0.id == p.id }
+                    statusBanner = "'\(p.firmaIsmi)' başarıyla Cari Hesaplara aktarıldı!"
+                }
+            } catch {
+                await MainActor.run {
+                    statusBanner = "Aktarım başarısız: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -1792,11 +1858,12 @@ public struct AraclarView: View {
     }
     
     private func openOrPreviewBelge(_ b: BelgeArsivKayit) {
+        let veriStr = b.veri ?? ""
         let cleanBase64: String
-        if b.veri.contains(",") {
-            cleanBase64 = b.veri.components(separatedBy: ",").last ?? b.veri
+        if veriStr.contains(",") {
+            cleanBase64 = veriStr.components(separatedBy: ",").last ?? veriStr
         } else {
-            cleanBase64 = b.veri
+            cleanBase64 = veriStr
         }
         
         if let rawData = Data(base64Encoded: cleanBase64, options: .ignoreUnknownCharacters) {
@@ -1818,11 +1885,12 @@ public struct AraclarView: View {
     
     private func shareBelge(_ b: BelgeArsivKayit) {
         #if canImport(UIKit)
+        let veriStr = b.veri ?? ""
         let cleanBase64: String
-        if b.veri.contains(",") {
-            cleanBase64 = b.veri.components(separatedBy: ",").last ?? b.veri
+        if veriStr.contains(",") {
+            cleanBase64 = veriStr.components(separatedBy: ",").last ?? veriStr
         } else {
-            cleanBase64 = b.veri
+            cleanBase64 = veriStr
         }
         
         var shareItems: [Any] = []
@@ -1835,7 +1903,7 @@ public struct AraclarView: View {
                 shareItems.append(tempUrl)
             }
         } else {
-            shareItems.append(b.veri.isEmpty ? b.ad : b.veri)
+            shareItems.append(veriStr.isEmpty ? b.ad : veriStr)
         }
         
         guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,

@@ -6,9 +6,42 @@ import PDFKit
 
 public final class PDFService {
     public static let shared = PDFService()
-    public let cloudPdfUrl: String = "https://ermay-pdf-api-390930978984.europe-west1.run.app"
+    public var cloudPdfUrl: String = ""
+    public var cloudPdfApiKey: String? = nil
+    private var cachedFirmaProfili: FirmaProfili? = nil
     
-    private init() {}
+    private init() {
+        if let savedUrl = UserDefaults.standard.string(forKey: "cloud_pdf_api_url"), !savedUrl.isEmpty {
+            self.cloudPdfUrl = savedUrl
+        }
+        if let savedKey = UserDefaults.standard.string(forKey: "cloud_pdf_api_key"), !savedKey.isEmpty {
+            self.cloudPdfApiKey = savedKey
+        }
+    }
+    
+    public func resolveFirmaProfili(fallback: FirmaProfili = FirmaProfili.varsayilan) async -> FirmaProfili {
+        if let cached = cachedFirmaProfili, !cached.unvan.isEmpty || !cached.firmaAdi.isEmpty {
+            return cached
+        }
+        if let profiller: [FirmaProfili] = try? await SupabaseService.shared.fetch(from: "firma_profili"),
+           let p = profiller.first {
+            self.cachedFirmaProfili = p
+            if let apiUrl = p.cloudPdfApiUrl, !apiUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let clean = apiUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.cloudPdfUrl = clean.hasSuffix("/") ? String(clean.dropLast()) : clean
+                UserDefaults.standard.set(self.cloudPdfUrl, forKey: "cloud_pdf_api_url")
+            }
+            if let apiKey = p.cloudPdfApiKey, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.cloudPdfApiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                UserDefaults.standard.set(self.cloudPdfApiKey, forKey: "cloud_pdf_api_key")
+            }
+            if let b64 = p.logoData, !b64.isEmpty {
+                UserDefaults.standard.set(b64, forKey: "company_logo_base64")
+            }
+            return p
+        }
+        return fallback
+    }
     
     #if canImport(UIKit)
     // MARK: - 1. FATURA QUEST PDF (Cloud Run & Local Fallback)
@@ -17,10 +50,11 @@ public final class PDFService {
         kalemler: [FaturaKalem],
         firma: FirmaProfili = FirmaProfili.varsayilan
     ) async -> Data? {
+        let resolvedFirma = (firma.firmaAdi.isEmpty && firma.unvan.isEmpty) ? await resolveFirmaProfili(fallback: firma) : firma
         if let cloudPdf = await fetchCloudFaturaPdf(fatura: fatura, kalemler: kalemler) {
             return cloudPdf
         }
-        return generateFaturaPDF(fatura: fatura, firma: firma)
+        return generateFaturaPDF(fatura: fatura, firma: resolvedFirma)
     }
     
     private func toDotNetIsoDate(_ raw: String?) -> String {
@@ -116,10 +150,11 @@ public final class PDFService {
         cari: CariKart? = nil,
         firma: FirmaProfili = FirmaProfili.varsayilan
     ) async -> Data? {
+        let resolvedFirma = (firma.firmaAdi.isEmpty && firma.unvan.isEmpty) ? await resolveFirmaProfili(fallback: firma) : firma
         if let cloudPdf = await fetchCloudTeklifPdf(teklif: teklif, kalemler: kalemler, cari: cari) {
             return cloudPdf
         }
-        return generateTeklifPDF(teklif: teklif, kalemler: kalemler, cari: cari, firma: firma)
+        return generateTeklifPDF(teklif: teklif, kalemler: kalemler, cari: cari, firma: resolvedFirma)
     }
     
     private func fetchCloudTeklifPdf(teklif: Teklif, kalemler: [TeklifKalem], cari: CariKart?) async -> Data? {
@@ -189,10 +224,11 @@ public final class PDFService {
         cari: CariKart? = nil,
         firma: FirmaProfili = FirmaProfili.varsayilan
     ) async -> Data? {
+        let resolvedFirma = (firma.firmaAdi.isEmpty && firma.unvan.isEmpty) ? await resolveFirmaProfili(fallback: firma) : firma
         if let cloudPdf = await fetchCloudSiparisPdf(siparis: siparis, kalemler: kalemler, cari: cari) {
             return cloudPdf
         }
-        return generateSiparisPDF(siparis: siparis, kalemler: kalemler, cari: cari, firma: firma)
+        return generateSiparisPDF(siparis: siparis, kalemler: kalemler, cari: cari, firma: resolvedFirma)
     }
     
     private func fetchCloudSiparisPdf(siparis: Siparis, kalemler: [SiparisKalem], cari: CariKart?) async -> Data? {
@@ -263,10 +299,11 @@ public final class PDFService {
         detayli: Bool = false,
         firma: FirmaProfili = FirmaProfili.varsayilan
     ) async -> Data? {
+        let resolvedFirma = (firma.firmaAdi.isEmpty && firma.unvan.isEmpty) ? await resolveFirmaProfili(fallback: firma) : firma
         if let cloudPdf = await fetchCloudQuestPdf(cari: cari, hareketler: hareketler, detayli: detayli) {
             return cloudPdf
         }
-        return generateCariEkstrePDF(cari: cari, hareketler: hareketler, detayli: detayli, firma: firma)
+        return generateCariEkstrePDF(cari: cari, hareketler: hareketler, detayli: detayli, firma: resolvedFirma)
     }
     
     private func fetchCloudQuestPdf(
@@ -325,6 +362,7 @@ public final class PDFService {
         
         if detayli {
             var detayDict: [String: [[String: Any]]] = [:]
+            let cachedFaturalar = await MainActor.run { DataStore.shared.faturalar }
             for (idx, h) in hareketler.enumerated() {
                 let fId: Int
                 if let fIdStr = h.belgeNo?.replacingOccurrences(of: "FT-", with: "").replacingOccurrences(of: "MB-", with: "").replacingOccurrences(of: "FTR-", with: ""),
@@ -334,18 +372,44 @@ public final class PDFService {
                     fId = idx + 100
                 }
                 
-                let isSale = h.borc > 0
-                let tutar = isSale ? h.borc : h.alacak
-                let item: [String: Any] = [
-                    "StokAdi": h.aciklama ?? (isSale ? "Hizmet / Satış Kalemi" : "İşlem Kalemi"),
-                    "StokKodu": h.belgeNo ?? "STK-\(idx + 1)",
-                    "Miktar": 1.0,
-                    "Birim": "Adet",
-                    "BirimFiyat": tutar,
-                    "KdvOrani": 20,
-                    "ToplamTutar": tutar
-                ]
-                detayDict["\(fId)"] = [item]
+                var realKalemler: [FaturaKalem] = []
+                if let matchedFatura = cachedFaturalar.first(where: { $0.id == String(fId) || ($0.faturaNo == h.belgeNo && !(h.belgeNo ?? "").isEmpty) }) {
+                    if let k = matchedFatura.kalemler, !k.isEmpty {
+                        realKalemler = k
+                    } else if let fetched: [FaturaKalem] = try? await SupabaseService.shared.fetch(from: "fatura_detaylar", filters: ["fatura_id": "eq.\(matchedFatura.id)"]) {
+                        realKalemler = fetched
+                    }
+                }
+                if realKalemler.isEmpty, let fetchedById: [FaturaKalem] = try? await SupabaseService.shared.fetch(from: "fatura_detaylar", filters: ["fatura_id": "eq.\(fId)"]), !fetchedById.isEmpty {
+                    realKalemler = fetchedById
+                }
+                
+                if !realKalemler.isEmpty {
+                    detayDict["\(fId)"] = realKalemler.enumerated().map { kIdx, k in
+                        [
+                            "StokAdi": k.stokAdi,
+                            "StokKodu": k.stokKodu ?? "STK-\(kIdx + 1)",
+                            "Miktar": k.miktar,
+                            "Birim": k.birim ?? "Adet",
+                            "BirimFiyat": k.birimFiyat,
+                            "KdvOrani": k.kdvOrani,
+                            "ToplamTutar": k.toplamTutar
+                        ]
+                    }
+                } else {
+                    let isSale = h.borc > 0
+                    let tutar = isSale ? h.borc : h.alacak
+                    let item: [String: Any] = [
+                        "StokAdi": h.aciklama ?? (isSale ? "Hizmet / Satış Kalemi" : "İşlem Kalemi"),
+                        "StokKodu": h.belgeNo ?? "STK-\(idx + 1)",
+                        "Miktar": 1.0,
+                        "Birim": "Adet",
+                        "BirimFiyat": tutar,
+                        "KdvOrani": 20,
+                        "ToplamTutar": tutar
+                    ]
+                    detayDict["\(fId)"] = [item]
+                }
             }
             requestPayload["DetayDictionary"] = detayDict
         }
@@ -686,14 +750,22 @@ public final class PDFService {
     
     // MARK: - Universal Cloud Run POST Worker
     private func postToCloudRun(url: URL, payload: [String: Any]) async -> Data? {
+        if cachedFirmaProfili == nil {
+            _ = await resolveFirmaProfili()
+        }
         guard let httpBody = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
             return nil
         }
+        
+        let resolvedApiKey = cloudPdfApiKey ?? UserDefaults.standard.string(forKey: "cloud_pdf_api_key") ?? ProcessInfo.processInfo.environment["PDF_API_KEY"]
         
         for attempt in 1...2 {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let apiKey = resolvedApiKey, !apiKey.isEmpty {
+                request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+            }
             request.httpBody = httpBody
             request.timeoutInterval = attempt == 1 ? 20.0 : 30.0
             
@@ -775,7 +847,7 @@ public final class PDFService {
             if let kalemler = fatura.kalemler {
                 for item in kalemler {
                     (item.stokAdi as NSString).draw(at: CGPoint(x: 44, y: currentY), withAttributes: [.font: bodyFont, .foregroundColor: UIColor.black])
-                    ("\(String(format: "%.2f", item.miktar)) \(item.birim)" as NSString).draw(at: CGPoint(x: 280, y: currentY), withAttributes: [.font: bodyFont, .foregroundColor: UIColor.black])
+                    ("\(String(format: "%.2f", item.miktar)) \(item.birim ?? "Adet")" as NSString).draw(at: CGPoint(x: 280, y: currentY), withAttributes: [.font: bodyFont, .foregroundColor: UIColor.black])
                     ("₺\(String(format: "%.2f", item.birimFiyat))" as NSString).draw(at: CGPoint(x: 360, y: currentY), withAttributes: [.font: bodyFont, .foregroundColor: UIColor.black])
                     ("%\(Int(item.kdvOrani))" as NSString).draw(at: CGPoint(x: 430, y: currentY), withAttributes: [.font: bodyFont, .foregroundColor: UIColor.black])
                     ("₺\(String(format: "%.2f", item.toplamTutar))" as NSString).draw(at: CGPoint(x: 485, y: currentY), withAttributes: [.font: boldFont, .foregroundColor: UIColor.black])

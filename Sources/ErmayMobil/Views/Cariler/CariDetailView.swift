@@ -199,12 +199,13 @@ public struct CariDetailView: View {
                 .foregroundColor(Color(hex: "8E8E93"))
             
             // Bakiye Box (Borç / Alacak)
+            let netBakiye = currentCari.signedBakiye
             HStack {
                 VStack(spacing: 2) {
                     Text("Toplam Borç")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Color(hex: "8E8E93"))
-                    Text(AppFormatters.money(currentCari.bakiyeTuru == "B" ? currentCari.bakiye : 0))
+                    Text(AppFormatters.money(netBakiye > 0 ? netBakiye : 0))
                         .font(.system(size: 16, weight: .bold))
                         .foregroundColor(Color(hex: "EF4444"))
                 }
@@ -218,7 +219,7 @@ public struct CariDetailView: View {
                     Text("Toplam Alacak")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Color(hex: "8E8E93"))
-                    Text(AppFormatters.money(currentCari.bakiyeTuru == "A" ? currentCari.bakiye : 0))
+                    Text(AppFormatters.money(netBakiye < 0 ? abs(netBakiye) : 0))
                         .font(.system(size: 16, weight: .bold))
                         .foregroundColor(Color(hex: "10B981"))
                 }
@@ -559,9 +560,9 @@ public struct CariDetailView: View {
     
     @ViewBuilder
     private func renderRiskDurum() -> some View {
-        let bakiyeVal = currentCari.bakiye
+        let bakiyeVal = max(0.0, currentCari.signedBakiye)
         let limit = currentCari.riskLimiti ?? 50000.0
-        let pct = limit > 0 ? min(bakiyeVal / limit, 1.0) : 0.0
+        let pct = limit > 0 ? min(max(0.0, bakiyeVal / limit), 1.0) : 0.0
         let isCritical = pct > 0.85
         
         VStack(alignment: .leading, spacing: 12) {
@@ -778,8 +779,9 @@ public struct CariDetailView: View {
             formattedPhone = "90" + formattedPhone
         }
         
-        let bakiyeTuruMetin = currentCari.bakiyeTuru == "B" ? "Borç" : "Alacak"
-        let bakiyeStr = AppFormatters.money(currentCari.bakiye)
+        let netBakiye = currentCari.signedBakiye
+        let bakiyeTuruMetin = netBakiye < 0 ? "Alacak" : "Borç"
+        let bakiyeStr = AppFormatters.money(abs(netBakiye))
         var msg = "Sayın \(currentCari.unvan),\n\(currentCari.cariKodu ?? "") nolu cari hesabınızın güncel bakiyesi: \(bakiyeStr) (\(bakiyeTuruMetin)).\n"
         if gecikenBorcToplam > 0 {
             msg += "Geciken Toplam Borç Tutarı: \(AppFormatters.money(gecikenBorcToplam))\n"
@@ -857,8 +859,9 @@ public struct CariDetailView: View {
     
     // MARK: - Silme İşlemi (Canlı Supabase & UI)
     private func performDelete() {
-        if abs(currentCari.bakiye) > 0.01 {
-            deleteErrorMessage = "Bakiyesi sıfır olmayan (\(AppFormatters.money(abs(currentCari.bakiye)))) cari kart silinemez."
+        let netBakiye = currentCari.signedBakiye
+        if abs(netBakiye) > 0.01 {
+            deleteErrorMessage = "Bakiyesi sıfır olmayan (\(AppFormatters.money(abs(netBakiye)))) cari kart silinemez."
             return
         }
         let cariId = currentCari.id
@@ -874,9 +877,8 @@ public struct CariDetailView: View {
                     presentationMode.wrappedValue.dismiss()
                 }
             } catch {
-                print("[CariDetail] Silme hatası: \(error)")
                 await MainActor.run {
-                    self.deleteErrorMessage = "Cari kart silinemedi: \(error.localizedDescription)"
+                    deleteErrorMessage = "Cari silinemedi: \(error.localizedDescription)"
                 }
             }
         }

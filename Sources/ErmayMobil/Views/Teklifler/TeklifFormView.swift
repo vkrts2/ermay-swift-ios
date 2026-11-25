@@ -571,14 +571,15 @@ public struct TeklifFormView: View {
         isSaving = true
         errorMessage = nil
         
-        let teklifId = IdGenerator.generateMobileRecordId()
+        let teklifUuid = UUID().uuidString.lowercased()
         let tenantId = SupabaseService.shared.tenantId
         let cIdInt = cariId != nil ? Int(cariId!) : nil
-        
+        let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+
         let newTeklif = Teklif(
-            id: String(teklifId),
+            id: teklifUuid,
             teklifNo: teklifNo,
-            cariId: cariId ?? "1",
+            cariId: cariId ?? "",
             cariUnvan: cariUnvan,
             tarih: tarihStr,
             gecerlilikTarihi: gecerlilikTarihiStr,
@@ -588,54 +589,54 @@ public struct TeklifFormView: View {
             durum: durum,
             aciklama: aciklama,
             kalemler: kalemler,
-            syncGuid: UUID().uuidString,
+            syncGuid: teklifUuid,
             tenantId: tenantId
         )
-        
-        let teklifPayload = TeklifStrictInsertPayload(
-            id: teklifId,
-            teklif_no: teklifNo,
-            cari_id: cIdInt,
-            cari_unvan: cariUnvan,
-            tarih: tarihStr,
-            gecerlilik_tarihi: gecerlilikTarihiStr,
-            ara_toplam: araToplam,
-            kdv_toplam: kdvToplami,
-            genel_toplam: genelToplam,
-            durum: durum,
-            aciklama: aciklama,
-            tenant_id: tenantId,
-            uuid: UUID().uuidString,
-            version: 1
-        )
-        
+
+        var rpcPayload: [String: Any] = [
+            "uuid": teklifUuid,
+            "tenant_id": tenantId,
+            "teklif_no": teklifNo,
+            "cari_unvan": cariUnvan,
+            "tarih": tarihStr,
+            "gecerlilik_tarihi": gecerlilikTarihiStr,
+            "ara_toplam": araToplam,
+            "kdv_toplam": kdvToplami,
+            "genel_toplam": genelToplam,
+            "durum": durum,
+            "aciklama": aciklama,
+            "mali_yil": activeYearInt,
+            "detaylar": kalemler.map { it -> [String: Any] in
+                var d: [String: Any] = [
+                    "uuid": UUID().uuidString.lowercased(),
+                    "stok_adi": it.stokAdi,
+                    "miktar": it.miktar,
+                    "birim": it.birim ?? "Adet",
+                    "birim_fiyat": it.birimFiyat,
+                    "kdv_orani": it.kdvOrani,
+                    "toplam_tutar": it.tutar
+                ]
+                if let intStok = it.stokId.flatMap({ Int($0) }) { d["stok_id"] = intStok }
+                return d
+            }
+        ]
+        if let cid = cIdInt { rpcPayload["cari_id"] = cid }
+
         Task {
             do {
-                try await SupabaseService.shared.insert(into: "teklifler", item: teklifPayload)
-                
-                for it in kalemler {
-                    let dId = IdGenerator.generateMobileRecordId()
-                    let intStok = it.stokId != nil ? Int(it.stokId!) : nil
-                    let dPayload = TeklifDetayStrictInsertPayload(
-                        id: dId,
-                        teklif_id: teklifId,
-                        stok_id: intStok,
-                        stok_adi: it.stokAdi,
-                        miktar: it.miktar,
-                        birim: it.birim ?? "Adet",
-                        birim_fiyat: it.birimFiyat,
-                        kdv_orani: it.kdvOrani,
-                        toplam_tutar: it.tutar,
-                        tenant_id: tenantId,
-                        uuid: UUID().uuidString,
-                        version: 1
-                    )
-                    try? await SupabaseService.shared.insert(into: "teklif_detaylar", item: dPayload)
+                let res = try await SupabaseService.shared.rpcRaw(
+                    function: "save_teklif_atomic",
+                    params: ["p_payload": rpcPayload]
+                )
+                if let ok = res["success"] as? Bool, !ok {
+                    throw NSError(domain: "TeklifForm", code: 500, userInfo: [NSLocalizedDescriptionKey: (res["message"] as? String) ?? "Teklif kaydedilemedi."])
                 }
-                
+                var savedTeklif = newTeklif
+                if let tid = res["teklif_id"] { savedTeklif.id = String(describing: tid) }
+
                 await MainActor.run {
                     HardwareService.shared.hapticSuccess()
-                    onSave?(newTeklif)
+                    onSave?(savedTeklif)
                     isSaving = false
                     dismiss()
                 }

@@ -178,79 +178,64 @@ public struct SiparisDetailView: View {
     }
     
     private func convertToFatura() {
-        let faturaNo = "FTR-SIP-\(Int.random(in: 1000...9999))"
+        let faturaNo = "MB-FTR-\(SupabaseService.shared.activeFiscalYear)-\(Int.random(in: 1000...9999))"
+        let cachedStoklar = DataStore.shared.stoklar
         let faturaKalemler: [FaturaKalem] = displayedKalemler.map { k in
-            FaturaKalem(
+            let matchedStok = cachedStoklar.first(where: { $0.id == k.stokId || ($0.stokKodu != nil && $0.stokKodu == k.stokKodu) })
+            return FaturaKalem(
                 stokId: k.stokId,
-                stokKodu: k.stokKodu,
+                stokUuid: matchedStok?.syncGuid,
+                stokKodu: k.stokKodu ?? matchedStok?.stokKodu,
                 stokAdi: k.stokAdi,
                 birim: k.birim ?? "Adet",
                 miktar: k.miktar,
                 birimFiyat: k.birimFiyat,
-                kdvOrani: k.kdvOrani
+                kdvOrani: k.kdvOrani,
+                syncGuid: matchedStok?.syncGuid ?? UUID().uuidString.lowercased()
             )
         }
-        
-        let yeniFatura = Fatura(
-            faturaNo: faturaNo,
-            faturaTuru: siparis.siparisTuru == "ALINAN" ? "SATIS" : "ALIS",
-            cariId: siparis.cariId,
-            cariUnvan: siparis.cariUnvan,
-            tarih: AppFormatters.isoDate.string(from: Date()),
-            araToplam: siparis.araToplam,
-            kdvToplami: siparis.kdvToplami,
-            genelToplam: siparis.genelToplam,
-            kalemler: faturaKalemler
+
+        let cachedCariler = DataStore.shared.cariler
+        let matchedCari = cachedCariler.first(where: { $0.id == siparis.cariId || $0.unvan == siparis.cariUnvan })
+        let targetCari = matchedCari ?? CariKart(
+            id: siparis.cariId ?? "",
+            unvan: siparis.cariUnvan ?? "Müşteri"
         )
-        
+        let isSatis = siparis.siparisTuru == "ALINAN" || !siparis.siparisTuru.localizedCaseInsensitiveContains("verilen")
+        let todayStr = AppFormatters.isoDate.string(from: Date())
+
+        let req = InvoiceTransactionRequest(
+            id: nil,
+            faturaNo: faturaNo,
+            tarih: todayStr,
+            vadeTarihi: siparis.teslimTarihi ?? todayStr,
+            cari: targetCari,
+            tur: isSatis ? "Satış" : "Alış",
+            durum: "Açık",
+            odemeSekli: "Açık Hesap",
+            baglantiEvrakNo: siparis.siparisNo,
+            aciklama: siparis.aciklama ?? "Siparişten Dönüştürüldü: \(siparis.siparisNo)",
+            items: faturaKalemler
+        )
+
         Task {
             do {
-                var faturaToInsert = yeniFatura
-                if faturaToInsert.id.isEmpty || Int(faturaToInsert.id) == nil || Int(faturaToInsert.id)! <= 0 {
-                    let nextId = await SupabaseService.shared.getNextId(for: "faturalar")
-                    faturaToInsert.id = String(nextId)
-                }
-                try await SupabaseService.shared.insert(into: "faturalar", item: faturaToInsert)
-                
-                // Copy line items to fatura_detaylar
-                for k in displayedKalemler {
-                    var detayPayload: [String: Any] = [
-                        "uuid": UUID().uuidString,
-                        "tenant_id": SupabaseService.shared.tenantId,
-                        "fatura_no": faturaNo,
-                        "stok_adi": k.stokAdi,
-                        "birim": k.birim ?? "Adet",
-                        "miktar": k.miktar,
-                        "birim_fiyat": k.birimFiyat,
-                        "kdv_orani": k.kdvOrani,
-                        "kdv_tutari": k.tutar * (k.kdvOrani / 100.0),
-                        "toplam_tutar": k.tutar,
-                        "is_deleted": false
-                    ]
-                    if let fIdInt = Int(faturaToInsert.id) {
-                        detayPayload["fatura_id"] = fIdInt
-                    }
-                    if let fUuid = faturaToInsert.syncGuid, !fUuid.isEmpty {
-                        detayPayload["fatura_uuid"] = fUuid
-                    }
-                    if let sId = k.stokId, let sIdInt = Int(sId) {
-                        detayPayload["stok_id"] = sIdInt
-                    }
-                    if let sKodu = k.stokKodu, !sKodu.isEmpty {
-                        detayPayload["stok_kodu"] = sKodu
-                    }
-                    if let d = try? JSONSerialization.data(withJSONObject: detayPayload) {
-                        try? await SupabaseService.shared.insertRaw(into: "fatura_detaylar", data: d)
-                    }
-                }
-                
+                _ = try await TransactionService.shared.saveInvoiceTransaction(req: req)
                 try await SupabaseService.shared.update(table: "siparisler", id: siparis.id, item: ["durum": "TAMAMLANDI"])
+                await DataStore.shared.loadFaturalarCacheFirst(forceCloudRefresh: true)
                 await MainActor.run {
                     siparis.durum = "TAMAMLANDI"
                     convertedSuccess = true
+                    HardwareService.shared.hapticSuccess()
                 }
             } catch {
-                print("Faturaya dönüştürme hatası: \(error)")
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .userToastNotification,
+                        object: nil,
+                        userInfo: ["message": "Sipariş faturaya dönüştürülemedi: \(error.localizedDescription)"]
+                    )
+                }
             }
         }
     }

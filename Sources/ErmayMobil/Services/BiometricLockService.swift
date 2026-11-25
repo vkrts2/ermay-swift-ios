@@ -81,9 +81,8 @@ public final class BiometricLockService: ObservableObject {
     }
     
     public func verifyPin(_ enteredPin: String) -> Bool {
-        guard let savedPin = pinCode else {
-            self.isLocked = false
-            return true
+        guard let savedPin = pinCode, !savedPin.isEmpty else {
+            return false
         }
         if savedPin == enteredPin {
             self.isLocked = false
@@ -92,8 +91,12 @@ public final class BiometricLockService: ObservableObject {
         return false
     }
     
+    public func lockIfNeeded() {
+        lockNow()
+    }
+    
     public func lockNow() {
-        if pinCode != nil || isBiometricsEnabled {
+        if (pinCode != nil && !(pinCode?.isEmpty ?? true)) || isBiometricsEnabled {
             self.isLocked = true
         }
     }

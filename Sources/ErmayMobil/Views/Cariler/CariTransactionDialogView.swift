@@ -203,7 +203,7 @@ public struct CariTransactionDialogView: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.white)
                     .lineLimit(1)
-                Text("Kod: \(initialCari.cariKodu ?? "-") • Bakiye: \(AppFormatters.money(initialCari.bakiye)) \(initialCari.bakiyeTuru == "A" ? "(Alacaklı)" : "(Borçlu)")")
+                Text("Kod: \(initialCari.cariKodu ?? "-") • Bakiye: \(AppFormatters.money(abs(initialCari.signedBakiye))) \(initialCari.isAlacakli ? "(Alacaklı)" : "(Borçlu)")")
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "60A5FA"))
             }
@@ -536,19 +536,25 @@ public struct CariTransactionDialogView: View {
             bakiye: 0.0
         )
         
-        // Cari bakiyesini güncelle
+        // Cari bakiyesini güncelle (CRIT-IOS-01: Her zaman İŞARETLİ / SIGNED bakiye tutulur)
         var updated = initialCari
-        let oldNet = initialCari.bakiyeTuru == "B" ? initialCari.bakiye : -initialCari.bakiye
-        // Borç artışı borç bakiyesini artırır; Alacak artışı borç bakiyesini azaltır (CRIT-IOS-01)
+        let oldNet = initialCari.signedBakiye
+        // Borç artışı borç bakiyesini artırır; Alacak artışı borç bakiyesini azaltır
         let newNet = oldNet + (borcTutar - alacakTutar)
-        updated.bakiye = abs(newNet)
+        updated.bakiye = newNet
         updated.bakiyeTuru = newNet >= 0 ? "B" : "A"
+        let activeFiscalYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+        let isDekontOrCek = isDekont ||
+                            method.localizedCaseInsensitiveContains("dekont") ||
+                            method.localizedCaseInsensitiveContains("çek") ||
+                            method.localizedCaseInsensitiveContains("cek")
         
         Task {
             // 1. Cari Hareket ve Finansal Payloadları Hazırla (do-catch dışarısında tanımlanır)
             var hareketPayload: [String: Any] = [
                 "uuid": UUID().uuidString,
                 "tenant_id": SupabaseService.shared.tenantId,
+                "mali_yil": activeFiscalYearInt,
                 "cari_unvan": initialCari.unvan,
                 "evrak_no": docNo,
                 "islem_turu": isTahsilat ? "Tahsilat" : (isOdeme ? "Ödeme" : "Dekont"),
@@ -570,60 +576,65 @@ public struct CariTransactionDialogView: View {
 
             var bankaPayloadForBundle: [String: Any]? = nil
             var kasaPayloadForBundle: [String: Any]? = nil
-            if method.localizedCaseInsensitiveContains("banka") || method.localizedCaseInsensitiveContains("havale") || method.localizedCaseInsensitiveContains("eft") || method == "Kredi Kartı" {
-                var bankaPayload: [String: Any] = [
-                    "uuid": UUID().uuidString,
-                    "tenant_id": SupabaseService.shared.tenantId,
-                    "cari_unvan": initialCari.unvan,
-                    "evrak_no": docNo,
-                    "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                    "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                    "giren": isTahsilat ? amount : 0.0,
-                    "cikan": isOdeme ? amount : 0.0,
-                    "yatan": isTahsilat ? amount : 0.0,
-                    "ceken": isOdeme ? amount : 0.0,
-                    "tutar": amount,
-                    "aciklama": desc,
-                    "tarih": dateStr,
-                    "is_deleted": false
-                ]
-                if let bIdStr = selectedBankaId, let intBId = Int(bIdStr) {
-                    bankaPayload["banka_id"] = intBId
+            // Dekont, Çek ve Açılış fişlerinde kasa/banka hareketi oluşturulmaz
+            if !isAcilisFisi && !isDekontOrCek {
+                if method.localizedCaseInsensitiveContains("banka") || method.localizedCaseInsensitiveContains("havale") || method.localizedCaseInsensitiveContains("eft") || method == "Kredi Kartı" {
+                    var bankaPayload: [String: Any] = [
+                        "uuid": UUID().uuidString,
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "mali_yil": activeFiscalYearInt,
+                        "cari_unvan": initialCari.unvan,
+                        "evrak_no": docNo,
+                        "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "giren": isTahsilat ? amount : 0.0,
+                        "cikan": isOdeme ? amount : 0.0,
+                        "yatan": isTahsilat ? amount : 0.0,
+                        "ceken": isOdeme ? amount : 0.0,
+                        "tutar": amount,
+                        "aciklama": desc,
+                        "tarih": dateStr,
+                        "is_deleted": false
+                    ]
+                    if let bIdStr = selectedBankaId, let intBId = Int(bIdStr) {
+                        bankaPayload["banka_id"] = intBId
+                    }
+                    if let intCariId = Int(initialCari.id) {
+                        bankaPayload["cari_id"] = intCariId
+                    }
+                    if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
+                        bankaPayload["cari_uuid"] = cUuid
+                    }
+                    bankaPayloadForBundle = bankaPayload
+                } else if method == "Nakit" {
+                    var kasaPayload: [String: Any] = [
+                        "uuid": UUID().uuidString,
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "mali_yil": activeFiscalYearInt,
+                        "cari_unvan": initialCari.unvan,
+                        "evrak_no": docNo,
+                        "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
+                        "giren": isTahsilat ? amount : 0.0,
+                        "cikan": isOdeme ? amount : 0.0,
+                        "gelir": isTahsilat ? amount : 0.0,
+                        "gider": isOdeme ? amount : 0.0,
+                        "tutar": amount,
+                        "aciklama": desc,
+                        "tarih": dateStr,
+                        "is_deleted": false
+                    ]
+                    if let kIdStr = selectedKasaId, let intKId = Int(kIdStr) {
+                        kasaPayload["kasa_id"] = intKId
+                    }
+                    if let intCariId = Int(initialCari.id) {
+                        kasaPayload["cari_id"] = intCariId
+                    }
+                    if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
+                        kasaPayload["cari_uuid"] = cUuid
+                    }
+                    kasaPayloadForBundle = kasaPayload
                 }
-                if let intCariId = Int(initialCari.id) {
-                    bankaPayload["cari_id"] = intCariId
-                }
-                if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
-                    bankaPayload["cari_uuid"] = cUuid
-                }
-                bankaPayloadForBundle = bankaPayload
-            } else {
-                var kasaPayload: [String: Any] = [
-                    "uuid": UUID().uuidString,
-                    "tenant_id": SupabaseService.shared.tenantId,
-                    "cari_unvan": initialCari.unvan,
-                    "evrak_no": docNo,
-                    "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                    "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                    "giren": isTahsilat ? amount : 0.0,
-                    "cikan": isOdeme ? amount : 0.0,
-                    "gelir": isTahsilat ? amount : 0.0,
-                    "gider": isOdeme ? amount : 0.0,
-                    "tutar": amount,
-                    "aciklama": desc,
-                    "tarih": dateStr,
-                    "is_deleted": false
-                ]
-                if let kIdStr = selectedKasaId, let intKId = Int(kIdStr) {
-                    kasaPayload["kasa_id"] = intKId
-                }
-                if let intCariId = Int(initialCari.id) {
-                    kasaPayload["cari_id"] = intCariId
-                }
-                if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
-                    kasaPayload["cari_uuid"] = cUuid
-                }
-                kasaPayloadForBundle = kasaPayload
             }
 
             do {
@@ -657,28 +668,12 @@ public struct CariTransactionDialogView: View {
                 }
             } catch {
                 await MainActor.run {
-                    var bundle: [String: Any] = [
-                        "cari_hareket": hareketPayload,
-                        "cari_id": Int(initialCari.id) ?? initialCari.id,
-                        "yeni_cari_bakiye": updated.bakiye,
-                        "yeni_cari_bakiye_turu": updated.bakiyeTuru ?? "B"
-                    ]
-                    if let bp = bankaPayloadForBundle {
-                        bundle["banka_hareket"] = bp
-                    } else if let kp = kasaPayloadForBundle {
-                        bundle["kasa_hareket"] = kp
-                    }
-                    OfflineQueueService.shared.enqueueBundle(payload: bundle)
-                    
-                    HardwareService.shared.hapticSuccess()
                     NotificationCenter.default.post(
                         name: .userToastNotification,
                         object: nil,
-                        userInfo: ["message": "Cari işlem çevrimdışı kaydedildi. Bağlantı kurulduğunda senkronize edilecek."]
+                        userInfo: ["message": "Cari işlem kaydedilemedi: \(error.localizedDescription)"]
                     )
-                    onSave?(hareket, updated)
                     isSaving = false
-                    dismiss()
                 }
             }
         }

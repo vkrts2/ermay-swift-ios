@@ -5,7 +5,7 @@ public struct FaturaFormView: View {
     public var onSave: ((Fatura) -> Void)?
     
     // Fatura Başlık Bilgileri
-    @State private var faturaNo: String = "FTR-2026-\(Int.random(in: 10000...99999))"
+    @State private var faturaNo: String = "FTR-\(SupabaseService.shared.activeFiscalYear)-\(Int.random(in: 10000...99999))"
     @State private var tur: String = "Satış" // "Satış" | "Alış"
     @State private var durum: String = "Açık" // "Açık" | "Kapalı"
     @State private var odemeSekli: String = "Açık Hesap" // "Açık Hesap" | "Nakit" | "Kredi Kartı" | "Havale / EFT"
@@ -18,6 +18,8 @@ public struct FaturaFormView: View {
     @State private var showCariPicker: Bool = false
     @State private var kasaId: String = "1"
     @State private var bankaId: String = "1"
+    @State private var kasalar: [DialogAccountItem] = []
+    @State private var bankalar: [DialogAccountItem] = []
     
     // Kalemler
     @State private var items: [FaturaKalem] = []
@@ -174,6 +176,46 @@ public struct FaturaFormView: View {
                                 }
                             }
                             .frame(maxWidth: .infinity)
+                        }
+                        
+                        // Kasa / Banka Hesap Seçici (Kapalı Fatura / Nakit / Kredi Kartı / Havale / EFT)
+                        if odemeSekli != "Açık Hesap" {
+                            let isBankPayment = odemeSekli == "Kredi Kartı" || odemeSekli == "Havale / EFT" || odemeSekli == "Banka"
+                            let accounts = isBankPayment ? bankalar : kasalar
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(isBankPayment ? "BANKA / POS HESABI SEÇİN" : "KASA HESABI SEÇİN")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(Color(hex: "94A3B8"))
+                                
+                                Menu {
+                                    ForEach(accounts) { acc in
+                                        Button("\(acc.name) (\(AppFormatters.money(acc.bakiye)))") {
+                                            if isBankPayment {
+                                                bankaId = acc.id
+                                            } else {
+                                                kasaId = acc.id
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    let currentId = isBankPayment ? bankaId : kasaId
+                                    let selectedAcc = accounts.first(where: { $0.id == currentId }) ?? accounts.first
+                                    HStack {
+                                        Image(systemName: isBankPayment ? "building.columns.fill" : "banknote.fill")
+                                            .foregroundColor(Color(hex: "00FF87"))
+                                        Text(selectedAcc != nil ? "\(selectedAcc!.name) (\(AppFormatters.money(selectedAcc!.bakiye)))" : "Hesap Seçiniz")
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(.white)
+                                        Spacer()
+                                        Image(systemName: "chevron.down")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(Color(hex: "94A3B8"))
+                                    }
+                                    .padding(10)
+                                    .background(Color(hex: "1E1E1E"))
+                                    .cornerRadius(8)
+                                }
+                            }
                         }
                         
                         // Tarih & Vade Tarihi
@@ -357,21 +399,49 @@ public struct FaturaFormView: View {
             }
             .sheet(isPresented: $showStokPicker) {
                 StokPickerSheet { stok in
-                    let bf = tur == "Satış" ? (stok.satisFiyati ?? 0.0) : (stok.alisFiyati ?? 0.0)
+                    let bf = tur == "Satış" ? stok.satisFiyati : stok.alisFiyati
                     let newItem = FaturaKalem(
                         stokId: stok.id,
+                        stokUuid: stok.syncGuid,
                         stokKodu: stok.stokKodu,
                         stokAdi: stok.stokAdi,
                         birim: stok.birim ?? "Adet",
                         miktar: 1.0,
                         birimFiyat: bf,
-                        kdvOrani: stok.kdvOrani ?? 20.0,
+                        kdvOrani: stok.kdvOrani,
                         iskontoOrani: 0.0,
-                        aciklama: ""
+                        aciklama: "",
+                        syncGuid: stok.syncGuid ?? UUID().uuidString
                     )
                     items.append(newItem)
                     HardwareService.shared.hapticSuccess()
                 }
+            }
+            .task {
+                await loadAccounts()
+            }
+        }
+    }
+    
+    private func loadAccounts() async {
+        let fetchedKasalar: [DialogAccountItem] = (try? await SupabaseService.shared.fetch(from: "kasalar", orderBy: "id.asc")) ?? []
+        let fetchedBankalar: [DialogAccountItem] = (try? await SupabaseService.shared.fetch(from: "bankalar", orderBy: "id.asc")) ?? []
+        await MainActor.run {
+            if !fetchedKasalar.isEmpty {
+                self.kasalar = fetchedKasalar
+                if let first = fetchedKasalar.first {
+                    self.kasaId = first.id
+                }
+            } else {
+                self.kasalar = [DialogAccountItem(id: "1", name: "Merkez TL Kasası", bakiye: 0.0)]
+            }
+            if !fetchedBankalar.isEmpty {
+                self.bankalar = fetchedBankalar
+                if let first = fetchedBankalar.first {
+                    self.bankaId = first.id
+                }
+            } else {
+                self.bankalar = [DialogAccountItem(id: "1", name: "Garanti BBVA Ticari", bakiye: 0.0)]
             }
         }
     }
@@ -576,64 +646,13 @@ public struct FaturaFormView: View {
                     dismiss()
                 }
             } catch {
-                // Offline fallback: create local invoice, save to local SQLite, enqueue to OfflineQueueService
-                let subtotal = req.items.reduce(0.0) { $0 + ($1.miktar * $1.birimFiyat) }
-                let totalIskonto = req.items.reduce(0.0) { $0 + $1.iskontoTutari }
-                let totalKdv = req.items.reduce(0.0) { $0 + $1.kdvTutari }
-                let grandTotal = subtotal - totalIskonto + totalKdv
-                let isSatis = req.tur == "Satış" || req.tur.contains("SATIS")
-                let isPaid = req.odemeSekli != "Açık Hesap"
-                let faturaNo = req.faturaNo.hasPrefix("MB-") ? req.faturaNo : "MB-\(req.faturaNo)"
-                let invoiceUuid = UUID().uuidString
-                
-                let localFatura = Fatura(
-                    id: invoiceUuid,
-                    faturaNo: faturaNo,
-                    faturaTuru: isSatis ? "SATIS" : "ALIS",
-                    cariId: req.cari.id,
-                    cariUnvan: req.cari.unvan,
-                    tarih: req.tarih,
-                    vadeTarihi: req.vadeTarihi,
-                    araToplam: subtotal,
-                    kdvToplami: totalKdv,
-                    iskontoToplami: totalIskonto,
-                    genelToplam: grandTotal,
-                    odemeDurumu: isPaid ? "ODENDI" : "BEKLIYOR",
-                    durum: isPaid ? "Kapalı" : req.durum,
-                    aciklama: req.aciklama,
-                    kalemler: req.items,
-                    syncGuid: invoiceUuid,
-                    tenantId: SupabaseService.shared.tenantId
-                )
-                
-                // 1. Save to local SQLite database
-                try? await LocalDatabaseService.shared.upsertFaturalar([localFatura])
-                
-                // 2. Enqueue atomic invoice RPC payload
-                if let payloadData = try? JSONEncoder().encode(localFatura) {
-                    let rpcWrapper: [String: Any] = [
-                        "p_payload": (try? JSONSerialization.jsonObject(with: payloadData)) ?? [:]
-                    ]
-                    if let wrappedData = try? JSONSerialization.data(withJSONObject: rpcWrapper),
-                       let wrappedJson = String(data: wrappedData, encoding: .utf8) {
-                        OfflineQueueService.shared.enqueue(
-                            endpoint: "save_invoice_atomic",
-                            method: "RPC",
-                            payload: wrappedJson
-                        )
-                    }
-                }
-                
                 await MainActor.run {
-                    HardwareService.shared.hapticSuccess()
                     NotificationCenter.default.post(
                         name: .userToastNotification,
                         object: nil,
-                        userInfo: ["message": "Fatura çevrimdışı kaydedildi. Bağlantı sağlandığında eşitlenecek."]
+                        userInfo: ["message": "Fatura kaydedilemedi: \(error.localizedDescription)"]
                     )
-                    onSave?(localFatura)
                     self.isSaving = false
-                    dismiss()
                 }
             }
         }

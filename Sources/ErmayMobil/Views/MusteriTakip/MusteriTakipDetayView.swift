@@ -319,19 +319,23 @@ public struct MusteriTakipDetayView: View {
                 Button {
                     guard !gorusmeBaslik.isEmpty || !gorusmeIcerik.isEmpty else { return }
                     let isoTarih = ISO8601DateFormatter().string(from: gorusmeTarih)
-                    let newD = MusteriTakipDetay(
-                        id: IdGenerator.generateMobileRecordId(),
-                        klasorId: klasor.id,
-                        cariId: klasor.cariId,
-                        baslik: gorusmeBaslik.isEmpty ? "Müşteri Görüşmesi" : gorusmeBaslik,
-                        icerik: gorusmeIcerik,
-                        tip: "Gorusme",
-                        tarih: isoTarih
-                    )
-                    gorusmeler.insert(newD, at: 0)
+                    let payload: [String: Any] = [
+                        "uuid": UUID().uuidString.lowercased(),
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "klasor_id": klasor.id,
+                        "cari_id": klasor.cariId,
+                        "baslik": gorusmeBaslik.isEmpty ? "Müşteri Görüşmesi" : gorusmeBaslik,
+                        "icerik": gorusmeIcerik,
+                        "tip": "Gorusme",
+                        "tarih": isoTarih,
+                        "is_deleted": false
+                    ]
                     Task {
-                        _ = try? await SupabaseService.shared.insert(into: "musteri_takip_detaylar", item: newD)
+                        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                            try? await SupabaseService.shared.insertRaw(into: "musteri_takip_detaylar", data: data)
+                        }
                         touchKlasorSonIslemTarihi()
+                        await loadDetaylar()
                     }
                     gorusmeBaslik = ""
                     gorusmeIcerik = ""
@@ -403,21 +407,25 @@ public struct MusteriTakipDetayView: View {
                     
                     let isoTarih = ISO8601DateFormatter().string(from: fiyatTarih)
                     let safeBaslik = fiyatBaslik.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Fiyat Teklifi" : fiyatBaslik
-                    let newF = MusteriTakipDetay(
-                        id: IdGenerator.generateMobileRecordId(),
-                        klasorId: klasor.id,
-                        cariId: klasor.cariId,
-                        baslik: safeBaslik,
-                        icerik: fiyatAciklama,
-                        tip: "Fiyat",
-                        fiyatBilgisi: parsedFiyat,
-                        paraBirimi: fiyatParaBirimi,
-                        tarih: isoTarih
-                    )
-                    fiyatlar.insert(newF, at: 0)
+                    let payload: [String: Any] = [
+                        "uuid": UUID().uuidString.lowercased(),
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "klasor_id": klasor.id,
+                        "cari_id": klasor.cariId,
+                        "baslik": safeBaslik,
+                        "icerik": fiyatAciklama,
+                        "tip": "Fiyat",
+                        "fiyat_bilgisi": parsedFiyat,
+                        "para_birimi": fiyatParaBirimi,
+                        "tarih": isoTarih,
+                        "is_deleted": false
+                    ]
                     Task {
-                        _ = try? await SupabaseService.shared.insert(into: "musteri_takip_detaylar", item: newF)
+                        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                            try? await SupabaseService.shared.insertRaw(into: "musteri_takip_detaylar", data: data)
+                        }
                         touchKlasorSonIslemTarihi()
+                        await loadDetaylar()
                     }
                     fiyatBaslik = ""
                     fiyatTutar = ""
@@ -517,24 +525,28 @@ public struct MusteriTakipDetayView: View {
                             let isoTarih = ISO8601DateFormatter().string(from: gorselTarih)
                             let safeBaslik = gorselBaslik.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Belge / Görsel" : gorselBaslik
                             
-                            let newG = MusteriTakipDetay(
-                                id: IdGenerator.generateMobileRecordId(),
-                                klasorId: klasor.id,
-                                cariId: klasor.cariId,
-                                baslik: safeBaslik,
-                                icerik: "Fotoğraf / Evrak Eklendi",
-                                tip: "Gorsel",
-                                gorselBase64: base64,
-                                tarih: isoTarih
-                            )
+                            let payload: [String: Any] = [
+                                "uuid": UUID().uuidString.lowercased(),
+                                "tenant_id": SupabaseService.shared.tenantId,
+                                "klasor_id": klasor.id,
+                                "cari_id": klasor.cariId,
+                                "baslik": safeBaslik,
+                                "icerik": "Fotoğraf / Evrak Eklendi",
+                                "tip": "Gorsel",
+                                "gorsel_base64": base64,
+                                "tarih": isoTarih,
+                                "is_deleted": false
+                            ]
                             await MainActor.run {
-                                gorseller.insert(newG, at: 0)
                                 gorselBaslik = ""
                                 selectedPhotoItem = nil
                             }
                             Task {
-                                _ = try? await SupabaseService.shared.insert(into: "musteri_takip_detaylar", item: newG)
+                                if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                                    try? await SupabaseService.shared.insertRaw(into: "musteri_takip_detaylar", data: data)
+                                }
                                 touchKlasorSonIslemTarihi()
+                                await loadDetaylar()
                             }
                         }
                     }
@@ -629,19 +641,23 @@ public struct MusteriTakipDetayView: View {
                 Button {
                     guard !notBaslik.isEmpty || !notIcerik.isEmpty else { return }
                     let isoTarih = ISO8601DateFormatter().string(from: notTarih)
-                    let newN = MusteriTakipDetay(
-                        id: IdGenerator.generateMobileRecordId(),
-                        klasorId: klasor.id,
-                        cariId: klasor.cariId,
-                        baslik: notBaslik.isEmpty ? "Genel Not" : notBaslik,
-                        icerik: notIcerik,
-                        tip: "Not",
-                        tarih: isoTarih
-                    )
-                    notlar.insert(newN, at: 0)
+                    let payload: [String: Any] = [
+                        "uuid": UUID().uuidString.lowercased(),
+                        "tenant_id": SupabaseService.shared.tenantId,
+                        "klasor_id": klasor.id,
+                        "cari_id": klasor.cariId,
+                        "baslik": notBaslik.isEmpty ? "Genel Not" : notBaslik,
+                        "icerik": notIcerik,
+                        "tip": "Not",
+                        "tarih": isoTarih,
+                        "is_deleted": false
+                    ]
                     Task {
-                        _ = try? await SupabaseService.shared.insert(into: "musteri_takip_detaylar", item: newN)
+                        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                            try? await SupabaseService.shared.insertRaw(into: "musteri_takip_detaylar", data: data)
+                        }
                         touchKlasorSonIslemTarihi()
+                        await loadDetaylar()
                     }
                     notBaslik = ""
                     notIcerik = ""
@@ -861,7 +877,7 @@ public struct MusteriTakipDetayView: View {
           """)
 
           <div class="footer">
-            Ermay Muhasebe &copy; 2026 - Müşteri Takip Sistemi tarafından otomatik oluşturulmuştur.
+            Ermay Muhasebe &copy; \(SupabaseService.shared.activeFiscalYear) - Müşteri Takip Sistemi tarafından otomatik oluşturulmuştur.
           </div>
         </body>
         </html>

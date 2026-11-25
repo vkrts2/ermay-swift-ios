@@ -1,6 +1,7 @@
 import SwiftUI
 
 public struct RootView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var supabaseService = SupabaseService.shared
     @ObservedObject var authService = AuthService.shared
     @ObservedObject var lockService = BiometricLockService.shared
@@ -20,6 +21,11 @@ public struct RootView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .background {
+                BiometricLockService.shared.lockIfNeeded()
+            }
+        }
         .onChange(of: supabaseService.isConfigured) { configured in
             if configured {
                 SupabaseService.shared.startRealtimeListener()
@@ -33,7 +39,7 @@ public struct RootView: View {
             }
         }
         .onAppear {
-            OfflineQueueService.shared.startAutoProcessing()
+            NetworkMonitor.shared.start()
             if supabaseService.isConfigured {
                 SupabaseService.shared.startRealtimeListener()
                 if authService.isAuthenticated {

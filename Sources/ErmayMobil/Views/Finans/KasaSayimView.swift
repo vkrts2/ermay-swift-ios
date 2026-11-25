@@ -21,12 +21,16 @@ public struct KasaSayimView: View {
     ]
     @State private var madeniToplam: String = "0"
     @State private var sistemKasaBakiyesi: Double = 0.0
+    @State private var kasalarListesi: [KasaBanka] = []
+    @State private var selectedKasaId: String = "1"
     @State private var isFinalizing: Bool = false
     @State private var showSavedAlert: Bool = false
     @Environment(\.dismiss) private var dismiss
     
-    public init(sistemBakiye: Double = 0.0) {
-        _sistemKasaBakiyesi = State(initialValue: sistemBakiye)
+    public init(sistemBakiye: Double = 0.0, kasalar: [KasaBanka] = []) {
+        _sistemKasaBakiyesi = State(initialValue: kasalar.first?.bakiye ?? sistemBakiye)
+        _kasalarListesi = State(initialValue: kasalar)
+        _selectedKasaId = State(initialValue: kasalar.first?.id ?? "1")
     }
     
     public var fizikiToplam: Double {
@@ -54,6 +58,30 @@ public struct KasaSayimView: View {
                         }
                         .padding(.horizontal)
                         .padding(.top, 8)
+                        
+                        // Kasa Seçici (Birden fazla kasa varsa seçili kasanın bakiyesiyle karşılaştırılır)
+                        if kasalarListesi.count > 1 {
+                            GlassCard(cornerRadius: 14, padding: 14) {
+                                HStack {
+                                    Text("Sayım Yapılan Kasa")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(AppTheme.textPrimary)
+                                    Spacer()
+                                    Picker("Kasa", selection: $selectedKasaId) {
+                                        ForEach(kasalarListesi) { k in
+                                            Text("\(k.hesapAdi) (\(AppFormatters.money(k.bakiye)))").tag(k.id)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .onChange(of: selectedKasaId) { newId in
+                                        if let matched = kasalarListesi.first(where: { $0.id == newId }) {
+                                            sistemKasaBakiyesi = matched.bakiye
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
                         
                         // Özet Karşılaştırma Kartı
                         GlassCard(cornerRadius: 18, padding: 18) {
@@ -167,6 +195,20 @@ public struct KasaSayimView: View {
                 }
             }
             .navigationBarHidden(true)
+            .task {
+                if kasalarListesi.isEmpty {
+                    if let fetched: [KasaBanka] = try? await SupabaseService.shared.fetch(from: "kasalar"),
+                       !fetched.isEmpty {
+                        await MainActor.run {
+                            self.kasalarListesi = fetched
+                            if let first = fetched.first {
+                                self.selectedKasaId = first.id
+                                self.sistemKasaBakiyesi = first.bakiye
+                            }
+                        }
+                    }
+                }
+            }
             .alert("Kasa Sayımı Başarılı", isPresented: $showSavedAlert) {
                 Button("Tamam") { dismiss() }
             } message: {
@@ -181,23 +223,17 @@ public struct KasaSayimView: View {
         df.dateFormat = "yyyy-MM-dd"
         let bugun = df.string(from: Date())
         
-        let khId = IdGenerator.generateMobileRecordId()
-        let evrakNo = "SYM-\(khId % 100000)"
-        let fis = KasaHareket(
-            id: khId,
-            tarih: bugun,
-            islemTuru: kasaFarki >= 0 ? "KASA_FAZLASI" : "KASA_NOKSANI",
-            cariUnvan: "KASA MUTABAKATI",
-            belgeNo: evrakNo,
-            tutar: abs(kasaFarki),
-            aciklama: "Günlük Kasa Sayım Fişi - Fiziki: \(AppFormatters.money(fizikiToplam))"
-        )
-        
+        let evrakNo = "SYM-\(Int.random(in: 10000...99999))"
+        let txUuid = UUID().uuidString.lowercased()
+
         Task {
+            let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+            let kasaIdInt = Int(selectedKasaId) ?? 1
             let payload: [String: Any] = [
-                "id": khId,
-                "uuid": fis.uuid,
+                "uuid": txUuid,
                 "tenant_id": SupabaseService.shared.tenantId,
+                "mali_yil": activeYearInt,
+                "kasa_id": kasaIdInt,
                 "tarih": bugun,
                 "islem_turu": kasaFarki >= 0 ? "KASA_FAZLASI" : "KASA_NOKSANI",
                 "hareket_turu": kasaFarki >= 0 ? "Tahsilat" : "Ödeme",
@@ -211,15 +247,8 @@ public struct KasaSayimView: View {
                 "aciklama": "Günlük Kasa Sayım Fişi - Fiziki: \(AppFormatters.money(fizikiToplam))",
                 "is_deleted": false
             ]
-            if let data = try? JSONSerialization.data(withJSONObject: payload) {
+            if abs(kasaFarki) > 0.001, let data = try? JSONSerialization.data(withJSONObject: payload) {
                 try? await SupabaseService.shared.upsertRaw(into: "kasa_hareketler", data: data)
-            }
-            if let kasalar: [KasaBanka] = try? await SupabaseService.shared.fetch(from: "kasalar"),
-               var targetKasa = kasalar.first,
-               !targetKasa.id.isEmpty {
-                let kasaId = targetKasa.id
-                targetKasa.bakiye = fizikiToplam
-                try? await SupabaseService.shared.update(table: "kasalar", id: "\(kasaId)", item: targetKasa)
             }
             await MainActor.run {
                 isFinalizing = false

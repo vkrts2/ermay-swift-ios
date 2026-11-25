@@ -18,12 +18,27 @@ public struct VadeTakipView: View {
     public init() {}
     
     public var filteredList: [VadeItem] {
-        vadeListesi.filter { item in
+        let cal = Calendar.current
+        let now = Date()
+        let todayStart = cal.startOfDay(for: now)
+        let weekEnd = cal.date(byAdding: .day, value: 7, to: todayStart) ?? todayStart
+        return vadeListesi.filter { item in
+            let parsedDate = AppFormatters.parseDate(String(item.vadeTarihi.prefix(10))) ?? AppFormatters.parseDate(item.vadeTarihi)
             switch selectedTimeFilter {
             case "Gecikenler":
                 return item.gecikmeGun > 0
             case "Bugün":
-                return item.vadeTarihi == AppFormatters.shortDate.string(from: Date())
+                if let d = parsedDate {
+                    return cal.isDate(d, inSameDayAs: now)
+                }
+                return item.vadeTarihi == AppFormatters.shortDate.string(from: now) || item.vadeTarihi == AppFormatters.isoDate.string(from: now)
+            case "Bu Hafta":
+                guard let d = parsedDate else { return false }
+                let dStart = cal.startOfDay(for: d)
+                return dStart >= todayStart && dStart <= weekEnd
+            case "Bu Ay":
+                guard let d = parsedDate else { return false }
+                return cal.isDate(d, equalTo: now, toGranularity: .month) && cal.isDate(d, equalTo: now, toGranularity: .year)
             default:
                 return true
             }
@@ -206,10 +221,11 @@ public struct VadeTakipView: View {
             // Faturalardan vadeler
             for f in faturalar {
                 let vStr = f.vadeTarihi ?? f.tarih
-                let isSatis = f.faturaTuru.localizedCaseInsensitiveContains("satış")
+                let foldedTur = f.faturaTuru.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "tr_TR"))
+                let isSatis = foldedTur.contains("satis")
                 var gecikme = 0
-                if let d = AppFormatters.parseDate(vStr) {
-                    let diff = Calendar.current.dateComponents([.day], from: d, to: now).day ?? 0
+                if let d = AppFormatters.parseDate(String(vStr.prefix(10))) ?? AppFormatters.parseDate(vStr) {
+                    let diff = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: d), to: Calendar.current.startOfDay(for: now)).day ?? 0
                     if diff > 0 { gecikme = diff }
                 }
                 items.append(VadeItem(
@@ -292,9 +308,43 @@ public struct VadeTakipView: View {
                     }
                     
                     ActionButton(title: "Yeni Vadeyi Kaydet", icon: "checkmark.circle.fill", color: AppTheme.primary) {
+                        let isoVade = AppFormatters.isoDate.string(from: newPostponeDate)
+                        let diff = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: newPostponeDate), to: Calendar.current.startOfDay(for: Date())).day ?? 0
+                        let newGecikme = max(0, diff)
                         if let idx = vadeListesi.firstIndex(where: { $0.id == item.id }) {
-                            vadeListesi[idx].vadeTarihi = AppFormatters.shortDate.string(from: newPostponeDate)
-                            vadeListesi[idx].gecikmeGun = 0
+                            vadeListesi[idx].vadeTarihi = isoVade
+                            vadeListesi[idx].gecikmeGun = newGecikme
+                        }
+                        let targetTable: String
+                        if item.faturaId != nil {
+                            targetTable = "faturalar"
+                        } else if (item.faturaNo ?? "").uppercased().contains("SN") || item.cariUnvan == "Senet" {
+                            targetTable = "senetler"
+                        } else {
+                            targetTable = "cekler"
+                        }
+                        let targetId = item.faturaId ?? item.id
+                        Task {
+                            let updatePayload: [String: Any] = [
+                                "vade_tarihi": isoVade,
+                                "updated_at": ISO8601DateFormatter().string(from: Date())
+                            ]
+                            if let data = try? JSONSerialization.data(withJSONObject: updatePayload) {
+                                do {
+                                    try await SupabaseService.shared.updateRaw(table: targetTable, id: targetId, data: data)
+                                } catch {
+                                    await MainActor.run {
+                                        NotificationCenter.default.post(
+                                            name: .userToastNotification,
+                                            object: nil,
+                                            userInfo: ["message": "Vade güncellenemedi: \(error.localizedDescription)"]
+                                        )
+                                    }
+                                }
+                            }
+                            if targetTable == "faturalar" {
+                                await DataStore.shared.loadFaturalarCacheFirst(forceCloudRefresh: true)
+                            }
                         }
                         showPostponeModal = false
                         HardwareService.shared.hapticSuccess()

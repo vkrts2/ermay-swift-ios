@@ -176,9 +176,13 @@ public struct SiparisKalem: Identifiable, Codable, Hashable {
     public var stokId: String?
     public var stokKodu: String?
     public var stokAdi: String
-    public var miktar: Double
+    public var miktar: Double {
+        didSet { tutar = miktar * birimFiyat }
+    }
     public var birim: String?
-    public var birimFiyat: Double
+    public var birimFiyat: Double {
+        didSet { tutar = miktar * birimFiyat }
+    }
     public var kdvOrani: Double
     public var tutar: Double
     public var aciklama: String?
@@ -198,6 +202,7 @@ public struct SiparisKalem: Identifiable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id
         case uuid
+        case syncGuid = "sync_guid"
         case siparisId = "siparis_id"
         case stokId = "stok_id"
         case stokKodu = "stok_kodu"
@@ -222,7 +227,8 @@ public struct SiparisKalem: Identifiable, Codable, Hashable {
         birimFiyat: Double = 0.0,
         kdvOrani: Double = 20.0,
         tutar: Double = 0.0,
-        aciklama: String? = nil
+        aciklama: String? = nil,
+        syncGuid: String? = nil
     ) {
         self.id = id
         self.siparisId = siparisId
@@ -235,6 +241,7 @@ public struct SiparisKalem: Identifiable, Codable, Hashable {
         self.kdvOrani = kdvOrani
         self.tutar = tutar > 0 ? tutar : (miktar * birimFiyat)
         self.aciklama = aciklama
+        self.syncGuid = syncGuid ?? UUID().uuidString
     }
     
     public init(from decoder: Decoder) throws {
@@ -266,8 +273,15 @@ public struct SiparisKalem: Identifiable, Codable, Hashable {
         self.birim = (try? c.decode(String.self, forKey: .birim)) ?? "Adet"
         self.birimFiyat = (try? c.decode(Double.self, forKey: .birimFiyat)) ?? 0.0
         self.kdvOrani = (try? c.decode(Double.self, forKey: .kdvOrani)) ?? 20.0
-        self.tutar = (try? c.decode(Double.self, forKey: .tutar)) ?? (try? c.decode(Double.self, forKey: .toplamTutar)) ?? (self.miktar * self.birimFiyat)
+        if let dTutar = try? c.decode(Double.self, forKey: .tutar), dTutar > 0 {
+            self.tutar = dTutar
+        } else if let dTop = try? c.decode(Double.self, forKey: .toplamTutar), dTop > 0 {
+            self.tutar = dTop
+        } else {
+            self.tutar = self.miktar * self.birimFiyat
+        }
         self.aciklama = try? c.decode(String.self, forKey: .aciklama)
+        self.syncGuid = (try? c.decode(String.self, forKey: .syncGuid)) ?? (try? c.decode(String.self, forKey: .uuid))
     }
     
     public func encode(to encoder: Encoder) throws {

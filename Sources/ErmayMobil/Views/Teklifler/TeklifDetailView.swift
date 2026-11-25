@@ -236,11 +236,7 @@ public struct TeklifDetailView: View {
         
         Task {
             do {
-                var siparisToInsert = yeniSiparis
-                if siparisToInsert.id.isEmpty || Int(siparisToInsert.id) == nil || Int(siparisToInsert.id)! <= 0 {
-                    let nextId = await SupabaseService.shared.getNextId(for: "siparisler")
-                    siparisToInsert.id = String(nextId)
-                }
+                let siparisToInsert = yeniSiparis
                 try await SupabaseService.shared.insert(into: "siparisler", item: siparisToInsert)
                 
                 // Copy line items to siparis_detaylar

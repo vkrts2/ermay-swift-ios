@@ -483,7 +483,7 @@ public struct MusteriTakipView: View {
                 unvan: c.unvan,
                 cariKod: c.cariKodu,
                 yetkili: c.yetkili,
-                telefon: (!c.telefon.isEmpty ? c.telefon : c.cepTelefon),
+                telefon: !(c.telefon ?? "").isEmpty ? (c.telefon ?? "") : (c.gsm ?? ""),
                 kaynak: "Cari Hesap"
             ))
         }
@@ -519,30 +519,33 @@ public struct MusteriTakipView: View {
     
     // MARK: - Aday Seç ve Takip Klasörü Oluştur
     private func selectAdayAndCreateKlasor(_ aday: MusteriAdayItem) {
-        let generatedId = IdGenerator.generateMobileRecordId()
         let nowIso = ISO8601DateFormatter().string(from: Date())
-        
         let targetCariId = (aday.kaynak == "Cari Hesap") ? aday.numericId : 0
         let targetKod = aday.cariKod ?? (aday.kaynak == "Portföy" ? "PORTFOY" : nil)
-        
-        let newFolder = MusteriTakipKlasor(
-            id: generatedId,
-            cariId: targetCariId,
-            cariUnvan: aday.unvan,
-            cariKod: targetKod,
-            telefon: aday.telefon,
-            yetkili: aday.yetkili,
-            etiket: "Yeni İletişim",
-            renk: "#3B82F6",
-            olusturmaTarihi: nowIso,
-            sonIslemTarihi: nowIso
-        )
-        
-        klasorler.insert(newFolder, at: 0)
+
+        var payload: [String: Any] = [
+            "uuid": UUID().uuidString.lowercased(),
+            "tenant_id": SupabaseService.shared.tenantId,
+            "cari_id": targetCariId,
+            "cari_unvan": aday.unvan,
+            "klasor_adi": aday.unvan,
+            "etiket": "Yeni İletişim",
+            "renk": "#3B82F6",
+            "olusturma_tarihi": nowIso,
+            "son_islem_tarihi": nowIso,
+            "is_deleted": false
+        ]
+        if let kod = targetKod { payload["cari_kod"] = kod }
+        if let tel = aday.telefon { payload["telefon"] = tel }
+        if let yet = aday.yetkili { payload["yetkili"] = yet }
+
         showAdaySelectionModal = false
-        
+
         Task {
-            _ = try? await SupabaseService.shared.insert(into: "musteri_takip_klasorler", item: newFolder)
+            if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                try? await SupabaseService.shared.insertRaw(into: "musteri_takip_klasorler", data: data)
+            }
+            await loadKlasorler()
         }
     }
     
@@ -552,8 +555,8 @@ public struct MusteriTakipView: View {
         detaylar.removeAll { $0.klasorId == item.id }
         
         Task {
-            // Önce alt detayları temizle
-            try? await SupabaseService.shared.delete(table: "musteri_takip_detaylar", id: String(item.id))
+            // Önce alt detayları klasor_id filtresi ile soft-delete yap
+            try? await SupabaseService.shared.deleteWhere(table: "musteri_takip_detaylar", filter: "klasor_id=eq.\(item.id)")
             // Ardından klasörü temizle
             try? await SupabaseService.shared.delete(table: "musteri_takip_klasorler", id: String(item.id))
         }

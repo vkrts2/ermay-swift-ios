@@ -330,23 +330,12 @@ public struct TahsilatFormView: View {
                 }
             } catch {
                 await MainActor.run {
-                    var bundle: [String: Any] = [
-                        "kasa_hareket": kasaPayload
-                    ]
-                    if let cp = cariPayloadForBundle {
-                        bundle["cari_hareket"] = cp
-                    }
-                    OfflineQueueService.shared.enqueueBundle(payload: bundle)
-                    
-                    HardwareService.shared.hapticSuccess()
                     NotificationCenter.default.post(
                         name: .userToastNotification,
                         object: nil,
-                        userInfo: ["message": "İşlem çevrimdışı kaydedildi. Bağlantı kurulduğunda senkronize edilecek."]
+                        userInfo: ["message": "İşlem kaydedilemedi: \(error.localizedDescription)"]
                     )
-                    onSave?(h)
                     isSaving = false
-                    dismiss()
                 }
             }
         }

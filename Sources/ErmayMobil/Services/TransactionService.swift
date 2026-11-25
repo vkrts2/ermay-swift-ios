@@ -224,6 +224,7 @@ private struct BankaHareketStrictPayload: Encodable {
     let aciklama: String?
     let tenant_id: String
     let uuid: String
+    var mali_yil: Int = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -242,6 +243,7 @@ private struct BankaHareketStrictPayload: Encodable {
         case aciklama
         case tenant_id
         case uuid
+        case mali_yil
     }
     
     func encode(to encoder: Encoder) throws {
@@ -264,6 +266,7 @@ private struct BankaHareketStrictPayload: Encodable {
         try c.encodeIfPresent(aciklama, forKey: .aciklama)
         try c.encode(tenant_id, forKey: .tenant_id)
         try c.encode(uuid, forKey: .uuid)
+        try c.encode(mali_yil, forKey: .mali_yil)
     }
 }
 
@@ -318,6 +321,7 @@ public struct AtomicFaturaDetayData: Codable {
 }
 
 public struct AtomicInvoicePayload: Codable {
+    public var id: Int?
     public var tenant_id: String
     public var idempotency_key: String?
     public var uuid: String
@@ -393,123 +397,145 @@ public final class TransactionService: @unchecked Sendable {
         return "MB-TS-"
     }
     
-    // MARK: - Save Financial Transaction (Tahsilat / Ödeme / Virman / Çek)
+    // MARK: - Save Financial Transaction (Atomic PostgreSQL RPC: api_save_financial_transaction)
     public func saveFinancialTransaction(req: FinancialTransactionRequest) async throws -> Bool {
         guard req.amount > 0 else { return false }
-        
+
         let tenantId = SupabaseService.shared.tenantId
         let isOdeme = req.transactionType == "Ödeme" || req.transactionType == "Borç Dekontu" || req.transactionType == "Borçlandır"
-        let chId = req.id ?? IdGenerator.generateMobileRecordId()
         let evrakNo = getEvrakNoPrefix(method: req.method) + AppFormatters.isoDate.string(from: Date()).replacingOccurrences(of: "-", with: "") + "\(Int.random(in: 100...999))"
         let isAcilis = req.isAcilisFisi
-        
         let islemTuru = isAcilis ? "\(req.transactionType) (Açılış Fişi)" : "\(req.transactionType) (\(req.method))"
         let aciklama = isAcilis ? "[Açılış Fişi] \(req.description)".trimmingCharacters(in: .whitespaces) : "[\(req.method)] \(req.description)".trimmingCharacters(in: .whitespaces)
-        
+        let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
         let cIdInt = Int(req.cari.id)
-        
-        // Cari Bakiye ve Hareket Hesaplaması (CRIT-IOS-01)
-        // Türk çift taraflı muhasebe: Borç (+) net borcu artırır, Alacak (-) net borcu azaltır
-        let oldNet = req.cari.bakiyeTuru == "B" ? req.cari.bakiye : -req.cari.bakiye
-        let netDelta = isOdeme ? req.amount : -req.amount
-        let newNet = oldNet + netDelta
-        let yeniBakiye = abs(newNet)
-        let yeniBakiyeTuru = newNet >= 0 ? "B" : "A"
-        
-        // 1. Cari Hareket (Strict Integer PK)
-        let chPayload = CariHareketStrictPayload(
-            id: chId,
-            cari_id: cIdInt,
-            tarih: req.date,
-            evrak_no: evrakNo,
-            belge_no: evrakNo,
-            islem_turu: islemTuru,
-            borc: isOdeme ? req.amount : 0,
-            alacak: !isOdeme ? req.amount : 0,
-            bakiye: yeniBakiye,
-            fatura_id: chId,
-            aciklama: aciklama,
-            tenant_id: tenantId,
-            uuid: UUID().uuidString
-        )
-        try await SupabaseService.shared.insert(into: "cari_hareketler", item: chPayload)
-        
-        // Cari Bakiye Güncelleme (CRIT-IOS-01: Pozitif = Borçlu "B", Negatif = Alacaklı "A")
-        try await SupabaseService.shared.update(
-            table: "cariler",
-            id: req.cari.id,
-            item: CariBakiyeUpdate(bakiye: yeniBakiye, bakiyeTuru: yeniBakiyeTuru)
-        )
-        
-        // 2. Kasa veya Banka Hareketi
-        if !isAcilis, let hesap = req.selectedHesap {
+        let txUuid = UUID().uuidString.lowercased()
+
+        var cariHareket: [String: Any] = [
+            "uuid": txUuid,
+            "tenant_id": tenantId,
+            "cari_unvan": req.cari.unvan,
+            "tarih": req.date,
+            "evrak_no": evrakNo,
+            "belge_no": evrakNo,
+            "islem_turu": islemTuru,
+            "hareket_turu": isOdeme ? "Borç" : "Alacak",
+            "borc": isOdeme ? req.amount : 0.0,
+            "alacak": !isOdeme ? req.amount : 0.0,
+            "aciklama": aciklama,
+            "mali_yil": activeYearInt
+        ]
+        if let cid = cIdInt, cid > 0 { cariHareket["cari_id"] = cid }
+        if let cuuid = req.cari.syncGuid, !cuuid.isEmpty { cariHareket["cari_uuid"] = cuuid }
+
+        var payload: [String: Any] = [
+            "tenant_id": tenantId,
+            "idempotency_key": "swift-fin-\(txUuid)",
+            "mali_yil": activeYearInt,
+            "p_cari_hareket": cariHareket
+        ]
+
+        let isDekontOrCek = req.method.localizedCaseInsensitiveContains("dekont") ||
+                            req.method.localizedCaseInsensitiveContains("çek") ||
+                            req.method.localizedCaseInsensitiveContains("cek") ||
+                            req.transactionType.localizedCaseInsensitiveContains("dekont")
+        if !isAcilis && !isDekontOrCek, let hesap = req.selectedHesap {
             let isKasa = hesap.hesapTuru == "KASA"
             if isKasa {
-                let kasaHareket = KasaHareket(
-                    id: UUID().uuidString,
-                    hesapId: hesap.id,
-                    tarih: req.date,
-                    islemTuru: isOdeme ? "TEDIYE" : "TAHSILAT",
-                    cariId: req.cari.id,
-                    cariUnvan: req.cari.unvan,
-                    belgeNo: evrakNo,
-                    tutar: req.amount,
-                    aciklama: aciklama,
-                    syncGuid: UUID().uuidString,
-                    tenantId: tenantId
-                )
-                try await SupabaseService.shared.insert(into: "kasa_hareketler", item: kasaHareket)
+                var kh: [String: Any] = [
+                    "uuid": UUID().uuidString.lowercased(),
+                    "tenant_id": tenantId,
+                    "hesap_id": hesap.id,
+                    "tarih": req.date,
+                    "evrak_no": evrakNo,
+                    "belge_no": evrakNo,
+                    "islem_turu": isOdeme ? "TEDIYE" : "TAHSILAT",
+                    "hareket_turu": isOdeme ? "Çıkış" : "Giriş",
+                    "giren": !isOdeme ? req.amount : 0.0,
+                    "cikan": isOdeme ? req.amount : 0.0,
+                    "gelir": !isOdeme ? req.amount : 0.0,
+                    "gider": isOdeme ? req.amount : 0.0,
+                    "tutar": req.amount,
+                    "cari_unvan": req.cari.unvan,
+                    "aciklama": aciklama,
+                    "mali_yil": activeYearInt
+                ]
+                if let kid = Int(hesap.id), kid > 0 { kh["kasa_id"] = kid }
+                if let cid = cIdInt, cid > 0 { kh["cari_id"] = cid }
+                payload["p_kasa_hareket"] = kh
             } else {
-                let bankaHareket = BankaHareketStrictPayload(
-                    banka_id: Int(hesap.id),
-                    cari_id: cIdInt,
-                    cari_unvan: req.cari.unvan,
-                    tarih: req.date,
-                    evrak_no: evrakNo,
-                    belge_no: evrakNo,
-                    islem_turu: isOdeme ? "TEDIYE" : "TAHSILAT",
-                    giren: !isOdeme ? req.amount : 0,
-                    cikan: isOdeme ? req.amount : 0,
-                    yatan: !isOdeme ? req.amount : 0,
-                    ceken: isOdeme ? req.amount : 0,
-                    tutar: req.amount,
-                    aciklama: aciklama,
-                    tenant_id: tenantId,
-                    uuid: UUID().uuidString
-                )
-                try await SupabaseService.shared.insert(into: "banka_hareketler", item: bankaHareket)
+                var bh: [String: Any] = [
+                    "uuid": UUID().uuidString.lowercased(),
+                    "tenant_id": tenantId,
+                    "tarih": req.date,
+                    "evrak_no": evrakNo,
+                    "belge_no": evrakNo,
+                    "islem_turu": isOdeme ? "TEDIYE" : "TAHSILAT",
+                    "hareket_turu": isOdeme ? "Çıkış" : "Giriş",
+                    "giren": !isOdeme ? req.amount : 0.0,
+                    "cikan": isOdeme ? req.amount : 0.0,
+                    "yatan": !isOdeme ? req.amount : 0.0,
+                    "ceken": isOdeme ? req.amount : 0.0,
+                    "tutar": req.amount,
+                    "cari_unvan": req.cari.unvan,
+                    "aciklama": aciklama,
+                    "mali_yil": activeYearInt
+                ]
+                if let bid = Int(hesap.id), bid > 0 { bh["banka_id"] = bid }
+                if let cid = cIdInt, cid > 0 { bh["cari_id"] = cid }
+                payload["p_banka_hareket"] = bh
             }
-            
-            // Hesap Bakiyesi Güncelleme
-            let yeniHesapBakiye = hesap.bakiye + (isOdeme ? -req.amount : req.amount)
-            try await SupabaseService.shared.update(
-                table: isKasa ? "kasalar" : "bankalar",
-                id: hesap.id,
-                item: ["bakiye": yeniHesapBakiye]
-            )
         }
-        
+
+        let res = try await SupabaseService.shared.rpcRaw(
+            function: "api_save_financial_transaction",
+            params: ["payload": payload]
+        )
+        if let ok = res["success"] as? Bool, !ok {
+            let msg = (res["message"] as? String) ?? "Finansal işlem kaydedilemedi."
+            throw NSError(domain: "TransactionService", code: 500, userInfo: [NSLocalizedDescriptionKey: msg])
+        }
         return true
     }
-    
-    // MARK: - Save Invoice Transaction (Çift Taraflı Tam Muhasebe Kaydı)
-    public func saveInvoiceTransaction(req: InvoiceTransactionRequest) async throws -> Fatura {
-        let currentId = req.id ?? IdGenerator.generateMobileRecordId()
-        let isPaid = req.odemeSekli != "Açık Hesap"
-        let isSatis = req.tur == "Satış" || req.tur.contains("SATIS")
-        
+
+    // MARK: - Build Atomic Invoice Payload (Direct PostgreSQL)
+    public func buildAtomicInvoicePayload(req: InvoiceTransactionRequest) -> (fatura: Fatura, payload: AtomicInvoicePayload) {
+        let currentId: Int? = req.id
+        let isPaid = req.odemeSekli != "Açık Hesap" && req.durum != "Açık"
+        let upperTur = req.tur.uppercased(with: Locale(identifier: "tr_TR"))
+        let isIade = upperTur.contains("İADE") || upperTur.contains("IADE")
+        let isAlisBase = upperTur.contains("ALIŞ") || upperTur.contains("ALIS")
+        let isSatis = !isAlisBase
+
+        let resolvedFaturaTuru: String
+        let resolvedTurDisplay: String
+        if isSatis && isIade {
+            resolvedFaturaTuru = "SATIS_IADE"
+            resolvedTurDisplay = "Satış İade"
+        } else if !isSatis && isIade {
+            resolvedFaturaTuru = "ALIS_IADE"
+            resolvedTurDisplay = "Alış İade"
+        } else if isSatis {
+            resolvedFaturaTuru = "SATIS"
+            resolvedTurDisplay = "Satış"
+        } else {
+            resolvedFaturaTuru = "ALIS"
+            resolvedTurDisplay = "Alış"
+        }
+
         let subtotal = req.items.reduce(0.0) { $0 + ($1.miktar * $1.birimFiyat) }
         let totalIskonto = req.items.reduce(0.0) { $0 + $1.iskontoTutari }
         let totalKdv = req.items.reduce(0.0) { $0 + $1.kdvTutari }
         let grandTotal = subtotal - totalIskonto + totalKdv
-        
+
         let cIdInt = Int(req.cari.id)
         let tenantId = SupabaseService.shared.tenantId
-        
+        let invoiceUuid = UUID().uuidString.lowercased()
+
         let fatura = Fatura(
-            id: String(currentId),
+            id: currentId.map(String.init) ?? invoiceUuid,
             faturaNo: req.faturaNo.hasPrefix("MB-") ? req.faturaNo : "MB-\(req.faturaNo)",
-            faturaTuru: isSatis ? "SATIS" : "ALIS",
+            faturaTuru: resolvedFaturaTuru,
             cariId: req.cari.id,
             cariUnvan: req.cari.unvan,
             tarih: req.tarih,
@@ -522,22 +548,22 @@ public final class TransactionService: @unchecked Sendable {
             durum: isPaid ? "Kapalı" : req.durum,
             aciklama: req.aciklama,
             kalemler: req.items,
-            syncGuid: UUID().uuidString,
+            syncGuid: invoiceUuid,
             tenantId: tenantId
         )
-        
-        // 0. PostgreSQL Atomik ACID RPC
+
         let kIdInt: Int? = req.kasaId != nil ? Int(req.kasaId!) : nil
         let bIdInt: Int? = req.bankaId != nil ? Int(req.bankaId!) : nil
-        let invoiceUuid = fatura.syncGuid ?? UUID().uuidString
+        let cachedStoklar = MainActor.assumeIsolated { DataStore.shared.stoklar }
 
         let rpcPayload = AtomicInvoicePayload(
+            id: currentId,
             tenant_id: tenantId,
-            idempotency_key: "swift-\(UUID().uuidString)",
+            idempotency_key: "swift-\(invoiceUuid)",
             uuid: invoiceUuid,
             fatura_no: fatura.faturaNo,
             fatura_turu: fatura.faturaTuru,
-            tur: isSatis ? "Satış" : "Alış",
+            tur: resolvedTurDisplay,
             cari_id: cIdInt,
             cari_uuid: req.cari.syncGuid ?? (cIdInt == nil ? req.cari.id : nil),
             cari_unvan: req.cari.unvan,
@@ -548,7 +574,7 @@ public final class TransactionService: @unchecked Sendable {
             kdv_toplam: totalKdv,
             genel_toplam: grandTotal,
             is_kapali: isPaid,
-            fatura_tipi: "Fatura",
+            fatura_tipi: isPaid ? "Kapalı" : "Açık",
             odeme_sekli: req.odemeSekli,
             kasa_id: kIdInt,
             kasa_uuid: req.kasaId,
@@ -560,12 +586,15 @@ public final class TransactionService: @unchecked Sendable {
             mali_yil: Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date()),
             detaylar: req.items.map { it in
                 let sIdInt: Int? = it.stokId != nil ? Int(it.stokId!) : nil
-                // Each invoice line item MUST have its own unique UUID distinct from stok_uuid
-                // so selling the same product twice or across multiple invoices never collides on fatura_detaylar.uuid.
+                let resolvedStokUuid = it.stokUuid ?? cachedStoklar.first(where: { $0.id == it.stokId || ($0.stokKodu != nil && $0.stokKodu == it.stokKodu) })?.syncGuid
+                var itCopy = it
+                if let sUuid = resolvedStokUuid, !sUuid.isEmpty {
+                    itCopy.syncGuid = sUuid
+                }
                 return AtomicFaturaDetayData(
                     uuid: UUID().uuidString.lowercased(),
                     stok_id: sIdInt,
-                    stok_uuid: it.syncGuid,
+                    stok_uuid: itCopy.syncGuid,
                     stok_kodu: it.stokKodu,
                     stok_adi: it.stokAdi,
                     miktar: it.miktar,
@@ -580,6 +609,14 @@ public final class TransactionService: @unchecked Sendable {
                 )
             }
         )
+        return (fatura, rpcPayload)
+    }
+
+    // MARK: - Save Invoice Transaction (Çift Taraflı Tam Muhasebe Kaydı)
+    public func saveInvoiceTransaction(req: InvoiceTransactionRequest) async throws -> Fatura {
+        let built = buildAtomicInvoicePayload(req: req)
+        let fatura = built.fatura
+        let rpcPayload = built.payload
 
         do {
             let res: AtomicRpcResponse = try await SupabaseService.shared.rpc(
@@ -595,6 +632,7 @@ public final class TransactionService: @unchecked Sendable {
                 if let fuuid = res.fatura_uuid {
                     savedFatura.syncGuid = fuuid
                 }
+                await DataStore.shared.loadFaturalarCacheFirst(forceCloudRefresh: true)
                 return savedFatura
             } else {
                 let errMsg = res.message ?? "Fatura atomik olarak kaydedilemedi."

@@ -616,15 +616,16 @@ public struct SiparisFormView: View {
         isSaving = true
         errorMessage = nil
         
-        let sipId = IdGenerator.generateMobileRecordId()
+        let sipUuid = UUID().uuidString.lowercased()
         let tenantId = SupabaseService.shared.tenantId
         let cIdInt = cariId != nil ? Int(cariId!) : nil
-        
+        let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+
         let newSip = Siparis(
-            id: String(sipId),
+            id: sipUuid,
             siparisNo: siparisNo,
             siparisTuru: "ALINAN",
-            cariId: cariId ?? "1",
+            cariId: cariId ?? "",
             cariUnvan: cariUnvan,
             tarih: tarihStr,
             teslimTarihi: teslimatTarihiStr,
@@ -635,105 +636,62 @@ public struct SiparisFormView: View {
             durum: durum,
             aciklama: aciklama,
             kalemler: kalemler,
-            syncGuid: UUID().uuidString,
+            syncGuid: sipUuid,
             tenantId: tenantId
         )
-        
-        let sipPayload = SiparisStrictInsertPayload(
-            id: sipId,
-            siparis_no: siparisNo,
-            siparis_turu: "ALINAN",
-            cari_id: cIdInt,
-            cari_unvan: cariUnvan,
-            tarih: tarihStr,
-            teslim_tarihi: teslimatTarihiStr,
-            ara_toplam: araToplam,
-            kdv_toplam: kdvToplami,
-            genel_toplam: genelToplam,
-            durum: durum,
-            aciklama: aciklama,
-            tenant_id: tenantId,
-            uuid: UUID().uuidString,
-            version: 1
-        )
-        
+
+        var rpcPayload: [String: Any] = [
+            "uuid": sipUuid,
+            "tenant_id": tenantId,
+            "siparis_no": siparisNo,
+            "siparis_turu": "ALINAN",
+            "cari_unvan": cariUnvan,
+            "tarih": tarihStr,
+            "teslim_tarihi": teslimatTarihiStr,
+            "ara_toplam": araToplam,
+            "kdv_toplam": kdvToplami,
+            "genel_toplam": genelToplam,
+            "durum": durum,
+            "aciklama": aciklama,
+            "mali_yil": activeYearInt,
+            "detaylar": kalemler.map { it -> [String: Any] in
+                var d: [String: Any] = [
+                    "uuid": UUID().uuidString.lowercased(),
+                    "stok_adi": it.stokAdi,
+                    "miktar": it.miktar,
+                    "birim": it.birim ?? "Adet",
+                    "birim_fiyat": it.birimFiyat,
+                    "kdv_orani": it.kdvOrani,
+                    "toplam_tutar": it.tutar
+                ]
+                if let intStok = it.stokId.flatMap({ Int($0) }) { d["stok_id"] = intStok }
+                return d
+            }
+        ]
+        if let cid = cIdInt { rpcPayload["cari_id"] = cid }
+
         Task {
             do {
-                try await SupabaseService.shared.insert(into: "siparisler", item: sipPayload)
-                
-                for it in kalemler {
-                    let dId = IdGenerator.generateMobileRecordId()
-                    let intStok = it.stokId != nil ? Int(it.stokId!) : nil
-                    let dPayload = SiparisDetayStrictInsertPayload(
-                        id: dId,
-                        siparis_id: sipId,
-                        stok_id: intStok,
-                        stok_adi: it.stokAdi,
-                        miktar: it.miktar,
-                        birim: it.birim ?? "Adet",
-                        birim_fiyat: it.birimFiyat,
-                        kdv_orani: it.kdvOrani,
-                        toplam_tutar: it.tutar,
-                        tenant_id: tenantId,
-                        uuid: UUID().uuidString,
-                        version: 1
-                    )
-                    try? await SupabaseService.shared.insert(into: "siparis_detaylar", item: dPayload)
+                let res = try await SupabaseService.shared.rpcRaw(
+                    function: "save_siparis_atomic",
+                    params: ["p_payload": rpcPayload]
+                )
+                if let ok = res["success"] as? Bool, !ok {
+                    throw NSError(domain: "SiparisForm", code: 500, userInfo: [NSLocalizedDescriptionKey: (res["message"] as? String) ?? "Sipariş kaydedilemedi."])
                 }
-                
+                var savedSip = newSip
+                if let sid = res["siparis_id"] { savedSip.id = String(describing: sid) }
+
                 await MainActor.run {
                     HardwareService.shared.hapticSuccess()
-                    onSave?(newSip)
+                    onSave?(savedSip)
                     isSaving = false
                     dismiss()
                 }
             } catch {
-                // Offline fallback: enqueue order + line items to offline queue
-                if let sipData = try? JSONEncoder().encode(sipPayload),
-                   let sipJson = String(data: sipData, encoding: .utf8) {
-                    OfflineQueueService.shared.enqueue(
-                        endpoint: "siparisler",
-                        method: "POST",
-                        payload: sipJson
-                    )
-                }
-                for it in kalemler {
-                    let dId = IdGenerator.generateMobileRecordId()
-                    let intStok = it.stokId != nil ? Int(it.stokId!) : nil
-                    let dPayload = SiparisDetayStrictInsertPayload(
-                        id: dId,
-                        siparis_id: sipId,
-                        stok_id: intStok,
-                        stok_adi: it.stokAdi,
-                        miktar: it.miktar,
-                        birim: it.birim ?? "Adet",
-                        birim_fiyat: it.birimFiyat,
-                        kdv_orani: it.kdvOrani,
-                        toplam_tutar: it.tutar,
-                        tenant_id: tenantId,
-                        uuid: UUID().uuidString,
-                        version: 1
-                    )
-                    if let dData = try? JSONEncoder().encode(dPayload),
-                       let dJson = String(data: dData, encoding: .utf8) {
-                        OfflineQueueService.shared.enqueue(
-                            endpoint: "siparis_detaylar",
-                            method: "POST",
-                            payload: dJson
-                        )
-                    }
-                }
-                
                 await MainActor.run {
-                    HardwareService.shared.hapticSuccess()
-                    NotificationCenter.default.post(
-                        name: .userToastNotification,
-                        object: nil,
-                        userInfo: ["message": "Sipariş çevrimdışı kaydedildi. Bağlantı sağlandığında eşitlenecek."]
-                    )
-                    onSave?(newSip)
+                    self.errorMessage = "Sipariş kaydedilemedi: \(error.localizedDescription)"
                     isSaving = false
-                    dismiss()
                 }
             }
         }

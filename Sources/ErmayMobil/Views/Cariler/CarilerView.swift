@@ -53,8 +53,8 @@ public struct CarilerView: View {
         
         if sortByBakiye {
             list.sort { a, b in
-                let netA = a.bakiyeTuru == "B" ? a.bakiye : -a.bakiye
-                let netB = b.bakiyeTuru == "B" ? b.bakiye : -b.bakiye
+                let netA = a.signedBakiye
+                let netB = b.signedBakiye
                 return bakiyeSortDesc ? (netB < netA) : (netA < netB)
             }
         } else if grupSortState == 1 {
@@ -246,25 +246,8 @@ public struct CarilerView: View {
                                         },
                                         onDelete: { deleted in
                                             let cariUuid = deleted.syncGuid ?? deleted.id
-                                            let cariId = deleted.id
-                                            LocalDatabaseService.shared.markCariDeleted(uuid: cariUuid)
                                             cariler.removeAll { $0.id == deleted.id || $0.syncGuid == cariUuid }
-                                            
-                                            Task {
-                                                let nowUtc = AppFormatters.isoDate.string(from: Date())
-                                                let softDeleteJson = "{\"is_deleted\": true, \"deleted_at\": \"\(nowUtc)\"}"
-                                                do {
-                                                    if let payloadData = softDeleteJson.data(using: .utf8) {
-                                                        try await SupabaseService.shared.updateRaw(table: "cariler", id: cariId, data: payloadData)
-                                                    }
-                                                } catch {
-                                                    OfflineQueueService.shared.enqueue(
-                                                        endpoint: "cariler/\(cariId)",
-                                                        method: "PUT",
-                                                        payload: softDeleteJson
-                                                    )
-                                                }
-                                            }
+                                            dataStore.cariler.removeAll { $0.id == deleted.id || $0.syncGuid == cariUuid }
                                         }
                                     )) {
                                         renderAppleListRow(item: item, index: index)
@@ -300,19 +283,8 @@ public struct CarilerView: View {
                     }
                 }
             }
-            .onChange(of: searchQuery) { newQuery in
-                let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    dbSearchResults = nil
-                } else {
-                    Task {
-                        if let res = try? await LocalDatabaseService.shared.searchCariler(query: trimmed, limit: 50), !res.isEmpty {
-                            await MainActor.run { dbSearchResults = res }
-                        } else {
-                            await MainActor.run { dbSearchResults = nil }
-                        }
-                    }
-                }
+            .onChange(of: searchQuery) { _ in
+                dbSearchResults = nil
             }
             .onReceive(NotificationCenter.default.publisher(for: .supabaseRealtimeDataChanged)) { _ in
                 Task {
@@ -363,9 +335,9 @@ public struct CarilerView: View {
     
     // MARK: - Apple List Row Component (Exact Parity with CarilerScreen.tsx renderItem)
     private func renderAppleListRow(item: CariKart, index: Int) -> some View {
-        let isBorclu = item.bakiyeTuru == "B"
-        let isAlacakli = item.bakiyeTuru == "A"
-        let isZero = item.bakiye == 0
+        let netBakiye = item.signedBakiye
+        let isZero = abs(netBakiye) < 0.001
+        let isAlacakli = netBakiye < -0.001
         let assignedColor = iconColors[index % iconColors.count]
         
         return HStack(spacing: 12) {
@@ -407,7 +379,7 @@ public struct CarilerView: View {
             
             // Value & Sub-value
             VStack(alignment: .trailing, spacing: 2) {
-                Text(AppFormatters.money(item.bakiye))
+                Text(AppFormatters.money(abs(netBakiye)))
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(isZero ? Color(hex: "8E8E93") : (isAlacakli ? Color(hex: "30D158") : Color(hex: "FF453A")))
                 

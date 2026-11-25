@@ -205,12 +205,23 @@ public struct CariFormView: View {
                     telefon = c.telefon ?? ""
                     cepTelefon = c.gsm ?? ""
                     eposta = c.email ?? ""
+                    webAdresi = c.webSitesi ?? ""
                     vergiDairesi = c.vergiDairesi ?? ""
                     vergiNo = c.vergiNo ?? ""
+                    tcNo = c.tcKimlikNo ?? ""
+                    ticaretSicilNo = c.ticaretSicilNo ?? ""
+                    iban = c.iban ?? ""
+                    odemePlani = c.odemePlani ?? "Peşin"
+                    vadeGunu = String(c.vadeGunu ?? 0)
+                    riskLimiti = String(format: "%.2f", c.riskLimiti ?? 0.0)
                     il = c.sehir ?? "İstanbul"
                     ilce = c.ilce ?? ""
                     adres = c.adres ?? ""
+                    sevkAdresi = c.sevkAdresi ?? ""
+                    aciklama = c.aciklama ?? ""
+                    aktifMi = c.aktif ?? true
                     grup = (c.cariTuru ?? "").contains("Tedarik") ? "Tedarikçi" : "Müşteri"
+                    tur = grup == "Tedarikçi" ? "Satici" : "Alici"
                 }
             }
         }
@@ -249,11 +260,11 @@ public struct CariFormView: View {
         isSaving = true
         errorMessage = nil
         
-        let generatedCariInt = IdGenerator.generateMobileRecordId()
-        let generatedCariId = cariToEdit?.id ?? String(generatedCariInt)
+        let newUuid = cariToEdit?.syncGuid ?? UUID().uuidString.lowercased()
+        let generatedCariId = cariToEdit?.id ?? ""
         let saved = CariKart(
             id: generatedCariId,
-            cariKodu: cariKod.isEmpty ? "CARI-\(generatedCariInt % 100000)" : cariKod,
+            cariKodu: cariKod.isEmpty ? "CARI-\(Int.random(in: 10000...99999))" : cariKod,
             unvan: unvan,
             cariTuru: grup,
             yetkili: yetkili,
@@ -268,30 +279,28 @@ public struct CariFormView: View {
             sevkAdresi: sevkAdresi,
             sehir: il,
             ilce: ilce,
-            bakiye: cariToEdit?.bakiye ?? 0.0,
-            bakiyeTuru: cariToEdit?.bakiyeTuru ?? "B",
+            bakiye: cariToEdit?.signedBakiye ?? 0.0,
+            bakiyeTuru: cariToEdit != nil ? (cariToEdit!.signedBakiye >= 0 ? "B" : "A") : "B",
             riskLimiti: Double(riskLimiti.replacingOccurrences(of: ",", with: ".")) ?? 0.0,
             vadeGunu: Int(vadeGunu) ?? 0,
             odemePlani: odemePlani,
             ticaretSicilNo: ticaretSicilNo.isEmpty ? nil : ticaretSicilNo,
             iban: iban.isEmpty ? nil : iban,
+            aciklama: aciklama.isEmpty ? nil : aciklama,
             aktif: aktifMi,
-            syncGuid: cariToEdit?.syncGuid ?? UUID().uuidString,
+            syncGuid: newUuid,
             tenantId: SupabaseService.shared.tenantId
         )
-        
+
         Task {
-            var itemToSave = saved
+            let itemToSave = saved
             do {
                 if let editItem = cariToEdit, let intId = Int(editItem.id), intId > 0 {
                     try await SupabaseService.shared.update(table: "cariler", id: "\(intId)", item: saved)
                 } else {
-                    if (Int(itemToSave.id) ?? 0) <= 0 {
-                        let nextId = await SupabaseService.shared.getNextId(for: "cariler")
-                        itemToSave.id = String(nextId)
-                    }
                     try await SupabaseService.shared.insert(into: "cariler", item: itemToSave)
                 }
+                await DataStore.shared.loadCarilerCacheFirst(forceCloudRefresh: true)
                 await MainActor.run {
                     HardwareService.shared.hapticSuccess()
                     onSave?(itemToSave)
@@ -302,13 +311,6 @@ public struct CariFormView: View {
                 await MainActor.run {
                     self.errorMessage = "Kayıt Başarısız: \(error.localizedDescription)"
                     self.isSaving = false
-                    // İnternet hatası durumunda yine de offline kuyruğa kaydet
-                    OfflineQueueService.shared.enqueue(
-                        action: cariToEdit == nil ? "INSERT" : "UPDATE",
-                        table: "cariler",
-                        recordId: itemToSave.id,
-                        payload: try? JSONEncoder().encode(itemToSave)
-                    )
                 }
             }
         }

@@ -507,23 +507,21 @@ public struct StoklarView: View {
                     if let sel = selectedStok {
                         let stokUuid = sel.syncGuid ?? sel.id
                         let stokId = sel.id
-                        LocalDatabaseService.shared.markStokDeleted(uuid: stokUuid)
                         stoklar.removeAll { $0.id == sel.id || $0.syncGuid == stokUuid }
                         handleCreateNew()
-                        
+
                         Task {
-                            let nowUtc = AppFormatters.isoDate.string(from: Date())
-                            let softDeleteJson = "{\"is_deleted\": true, \"deleted_at\": \"\(nowUtc)\"}"
                             do {
-                                if let payloadData = softDeleteJson.data(using: .utf8) {
-                                    try await SupabaseService.shared.updateRaw(table: "stoklar", id: stokId, data: payloadData)
-                                }
+                                try await SupabaseService.shared.delete(table: "stoklar", id: stokId)
+                                await loadLiveStoklar()
                             } catch {
-                                OfflineQueueService.shared.enqueue(
-                                    endpoint: "stoklar/\(stokId)",
-                                    method: "PUT",
-                                    payload: softDeleteJson
-                                )
+                                await MainActor.run {
+                                    NotificationCenter.default.post(
+                                        name: .userToastNotification,
+                                        object: nil,
+                                        userInfo: ["message": "Stok silinemedi: \(error.localizedDescription)"]
+                                    )
+                                }
                             }
                         }
                     }
@@ -537,19 +535,8 @@ public struct StoklarView: View {
                     await loadLiveStoklar()
                 }
             }
-            .onChange(of: filterKod) { newQuery in
-                let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    dbSearchResults = nil
-                } else {
-                    Task {
-                        if let res = try? await LocalDatabaseService.shared.searchStoklar(query: trimmed, limit: 50), !res.isEmpty {
-                            await MainActor.run { dbSearchResults = res }
-                        } else {
-                            await MainActor.run { dbSearchResults = nil }
-                        }
-                    }
-                }
+            .onChange(of: filterKod) { _ in
+                dbSearchResults = nil
             }
             .onReceive(NotificationCenter.default.publisher(for: .supabaseRealtimeDataChanged)) { _ in
                 Task {
@@ -698,13 +685,18 @@ public struct StoklarView: View {
             }
             selectedStok = sel
             Task {
-                await DataStore.shared.saveStok(sel, isUpdate: true)
-                await loadLiveStoklar()
+                do {
+                    try await DataStore.shared.saveStok(sel, isUpdate: true)
+                    await loadLiveStoklar()
+                } catch {
+                    await MainActor.run {
+                        NotificationCenter.default.post(name: .userToastNotification, object: nil, userInfo: ["message": "Stok güncellenemedi: \(error.localizedDescription)"])
+                    }
+                }
             }
         } else {
-            let newId = String(IdGenerator.generateMobileRecordId())
             let newItem = StokKart(
-                id: newId,
+                id: "",
                 stokKodu: editStokKodu.isEmpty ? "STK-\(Int.random(in: 100...999))" : editStokKodu,
                 stokAdi: editStokAdi,
                 grupAdi: editKategori,
@@ -717,8 +709,14 @@ public struct StoklarView: View {
             stoklar.insert(newItem, at: 0)
             selectedStok = newItem
             Task {
-                await DataStore.shared.saveStok(newItem, isUpdate: false)
-                await loadLiveStoklar()
+                do {
+                    try await DataStore.shared.saveStok(newItem, isUpdate: false)
+                    await loadLiveStoklar()
+                } catch {
+                    await MainActor.run {
+                        NotificationCenter.default.post(name: .userToastNotification, object: nil, userInfo: ["message": "Stok kaydedilemedi: \(error.localizedDescription)"])
+                    }
+                }
             }
         }
     }
@@ -763,8 +761,7 @@ public struct StoklarView: View {
                     }
                     Task {
                         var hPayload: [String: Any] = [
-                            "id": IdGenerator.generateMobileRecordId(),
-                            "uuid": UUID().uuidString,
+                            "uuid": UUID().uuidString.lowercased(),
                             "tenant_id": SupabaseService.shared.tenantId,
                             "stok_adi": sel.stokAdi,
                             "stok_kodu": sel.stokKodu ?? "",

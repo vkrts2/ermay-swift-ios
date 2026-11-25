@@ -40,6 +40,8 @@ public struct FirmaProfili: Codable {
     public var adres: String?
     public var sehir: String?
     public var logoData: String? // Base64
+    public var cloudPdfApiUrl: String?
+    public var cloudPdfApiKey: String?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -54,6 +56,8 @@ public struct FirmaProfili: Codable {
         case adres
         case sehir
         case logoData = "logo_base64"
+        case cloudPdfApiUrl = "cloud_pdf_api_url"
+        case cloudPdfApiKey = "cloud_pdf_api_key"
     }
     
     public init(
@@ -67,7 +71,9 @@ public struct FirmaProfili: Codable {
         web: String? = nil,
         adres: String? = nil,
         sehir: String? = nil,
-        logoData: String? = nil
+        logoData: String? = nil,
+        cloudPdfApiUrl: String? = nil,
+        cloudPdfApiKey: String? = nil
     ) {
         self.id = id
         self.firmaAdi = firmaAdi
@@ -80,6 +86,8 @@ public struct FirmaProfili: Codable {
         self.adres = adres
         self.sehir = sehir
         self.logoData = logoData
+        self.cloudPdfApiUrl = cloudPdfApiUrl
+        self.cloudPdfApiKey = cloudPdfApiKey
     }
     
     public init(from decoder: Decoder) throws {
@@ -95,6 +103,8 @@ public struct FirmaProfili: Codable {
         self.adres = try? c.decode(String.self, forKey: .adres)
         self.sehir = try? c.decode(String.self, forKey: .sehir)
         self.logoData = try? c.decode(String.self, forKey: .logoData)
+        self.cloudPdfApiUrl = try? c.decode(String.self, forKey: .cloudPdfApiUrl)
+        self.cloudPdfApiKey = try? c.decode(String.self, forKey: .cloudPdfApiKey)
     }
     
     public func encode(to encoder: Encoder) throws {
@@ -109,6 +119,8 @@ public struct FirmaProfili: Codable {
         try c.encodeIfPresent(web, forKey: .web)
         try c.encodeIfPresent(adres, forKey: .adres)
         try c.encodeIfPresent(logoData, forKey: .logoData)
+        try c.encodeIfPresent(cloudPdfApiUrl, forKey: .cloudPdfApiUrl)
+        try c.encodeIfPresent(cloudPdfApiKey, forKey: .cloudPdfApiKey)
     }
     
     public static let varsayilan = FirmaProfili(
