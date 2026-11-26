@@ -246,3 +246,35 @@ public struct MusteriTakipKayit: Identifiable, Codable, Hashable {
         self.tenantId = tenantId
     }
 }
+
+public struct MusteriRisk: Identifiable, Codable, Hashable {
+    public var id: String
+    public var unvan: String
+    public var riskLimiti: Double
+    public var guncelBakiye: Double
+    
+    public var kalanLimit: Double {
+        max(0.0, riskLimiti - guncelBakiye)
+    }
+    
+    public var riskSeviyesi: String {
+        if riskLimiti > 0 && guncelBakiye > riskLimiti {
+            return "LİMİT AŞIMI"
+        } else if riskLimiti > 0 && (guncelBakiye / riskLimiti) >= 0.85 {
+            return "KRİTİK"
+        }
+        return "NORMAL"
+    }
+    
+    public init(
+        id: String = UUID().uuidString,
+        unvan: String,
+        riskLimiti: Double,
+        guncelBakiye: Double
+    ) {
+        self.id = id
+        self.unvan = unvan
+        self.riskLimiti = riskLimiti
+        self.guncelBakiye = guncelBakiye
+    }
+}

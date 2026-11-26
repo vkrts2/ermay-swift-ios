@@ -37,7 +37,8 @@ public struct SiparisFormView: View {
     @Environment(\.dismiss) private var dismiss
     public var onSave: ((Siparis) -> Void)?
     
-    @State private var siparisNo: String = "SIP-\(Int.random(in: 100000...999999))"
+    @State private var siparisNo: String = "MB-SIP-\(Int.random(in: 100000...999999))"
+    @State private var siparisTuruSelection: String = "Satış Siparişi" // "Satış Siparişi" (ALINAN) | "Alış Siparişi" (VERILEN)
     @State private var durum: String = "Bekliyor"
     @State private var oncelik: String = "Orta"
     @State private var odemeBilgisi: String = ""
@@ -61,6 +62,19 @@ public struct SiparisFormView: View {
     @State private var errorMessage: String? = nil
     
     private let birimler = ["Adet", "Kg", "Mt", "M2"]
+    
+    private var decimalNumberFormatter: NumberFormatter {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.allowsFloats = true
+        f.minimumFractionDigits = 0
+        f.maximumFractionDigits = 4
+        return f
+    }
+    
+    private var resolvedSiparisTuruCode: String {
+        siparisTuruSelection.localizedCaseInsensitiveContains("alış") || siparisTuruSelection.localizedCaseInsensitiveContains("alis") || siparisTuruSelection == "VERILEN" ? "VERILEN" : "ALINAN"
+    }
     
     public init(onSave: ((Siparis) -> Void)? = nil) {
         self.onSave = onSave
@@ -91,6 +105,7 @@ public struct SiparisFormView: View {
                             errorBanner(err)
                         }
                         
+                        siparisTuruSection
                         cariCardSection
                         siparisNoAndDurumSection
                         oncelikAndOdemeSection
@@ -172,6 +187,32 @@ public struct SiparisFormView: View {
             .padding(.horizontal)
     }
     
+    @ViewBuilder
+    private var siparisTuruSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SİPARİŞ TÜRÜ")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(Color(hex: "94A3B8"))
+            HStack(spacing: 8) {
+                ForEach(["Satış Siparişi", "Alış Siparişi"], id: \.self) { t in
+                    let isSel = siparisTuruSelection == t
+                    Button {
+                        siparisTuruSelection = t
+                    } label: {
+                        Text(t)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(isSel ? (t == "Satış Siparişi" ? Color(hex: "10B981") : Color(hex: "D97706")) : Color(hex: "1F2937"))
+                            .cornerRadius(10)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+
     @ViewBuilder
     private var cariCardSection: some View {
         Button {
@@ -416,7 +457,7 @@ public struct SiparisFormView: View {
                         TextField("Miktar", value: Binding(
                             get: { kalemler[index].miktar },
                             set: { kalemler[index].miktar = $0 }
-                        ), formatter: NumberFormatter())
+                        ), formatter: decimalNumberFormatter)
                         .keyboardType(.decimalPad)
                         .font(.system(size: 12, weight: .bold))
                         .padding(.horizontal, 6)
@@ -454,7 +495,7 @@ public struct SiparisFormView: View {
                     TextField("Fiyat", value: Binding(
                         get: { kalemler[index].birimFiyat },
                         set: { kalemler[index].birimFiyat = $0 }
-                    ), formatter: NumberFormatter())
+                    ), formatter: decimalNumberFormatter)
                     .keyboardType(.decimalPad)
                     .font(.system(size: 12, weight: .bold))
                     .padding(.horizontal, 8)
@@ -620,12 +661,14 @@ public struct SiparisFormView: View {
         let tenantId = SupabaseService.shared.tenantId
         let cIdInt = cariId != nil ? Int(cariId!) : nil
         let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+        let finalSiparisNo = siparisNo.hasPrefix("MB-") ? siparisNo : "MB-\(siparisNo)"
+        let turCode = resolvedSiparisTuruCode
 
         let newSip = Siparis(
             id: sipUuid,
-            siparisNo: siparisNo,
-            siparisTuru: "ALINAN",
-            cariId: cariId ?? "",
+            siparisNo: finalSiparisNo,
+            siparisTuru: turCode,
+            cariId: cIdInt != nil ? cariId : nil,
             cariUnvan: cariUnvan,
             tarih: tarihStr,
             teslimTarihi: teslimatTarihiStr,
@@ -643,11 +686,16 @@ public struct SiparisFormView: View {
         var rpcPayload: [String: Any] = [
             "uuid": sipUuid,
             "tenant_id": tenantId,
-            "siparis_no": siparisNo,
-            "siparis_turu": "ALINAN",
+            "siparis_no": finalSiparisNo,
+            "siparis_turu": turCode,
+            "tur": siparisTuruSelection,
             "cari_unvan": cariUnvan,
             "tarih": tarihStr,
             "teslim_tarihi": teslimatTarihiStr,
+            "oncelik": oncelik,
+            "odeme_bilgisi": odemeBilgisi,
+            "baglanti_evrak_no": baglantiEvrakNo,
+            "pdf_notlar": pdfNotlar,
             "ara_toplam": araToplam,
             "kdv_toplam": kdvToplami,
             "genel_toplam": genelToplam,

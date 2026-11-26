@@ -135,7 +135,9 @@ public struct Teklif: Identifiable, Codable, Hashable {
         let finalUuid = syncGuid ?? (Int(id) == nil ? id : UUID().uuidString)
         try container.encode(finalUuid, forKey: .uuid)
         try container.encode(teklifNo, forKey: .teklifNo)
-        try container.encodeIfPresent(cariId, forKey: .cariId)
+        if let cid = cariId, let intCariId = Int(cid), intCariId > 0 {
+            try container.encode(intCariId, forKey: .cariId)
+        }
         try container.encodeIfPresent(cariUnvan, forKey: .cariUnvan)
         try container.encode(tarih, forKey: .tarih)
         try container.encodeIfPresent(gecerlilikTarihi, forKey: .gecerlilikTarihi)
@@ -146,7 +148,7 @@ public struct Teklif: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(aciklama, forKey: .aciklama)
         try container.encodeIfPresent(kalemler, forKey: .kalemler)
         try container.encodeIfPresent(syncGuid, forKey: .syncGuid)
-        try container.encodeIfPresent(tenantId, forKey: .tenantId)
+        try container.encode(tenantId ?? SupabaseService.shared.currentTenantId, forKey: .tenantId)
     }
 }
 

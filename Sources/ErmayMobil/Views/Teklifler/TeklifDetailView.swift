@@ -207,76 +207,86 @@ public struct TeklifDetailView: View {
     }
     
     private func convertToSiparis() {
-        let siparisNo = "SIP-\(Int.random(in: 1000...9999))"
-        let sKalemler: [SiparisKalem] = displayedKalemler.map { k in
-            SiparisKalem(
-                stokId: k.stokId,
-                stokKodu: k.stokKodu,
-                stokAdi: k.stokAdi,
-                miktar: k.miktar,
-                birim: k.birim ?? "Adet",
-                birimFiyat: k.birimFiyat,
-                kdvOrani: k.kdvOrani,
-                tutar: k.tutar
-            )
-        }
-        
-        let yeniSiparis = Siparis(
-            siparisNo: siparisNo,
-            siparisTuru: "ALINAN",
-            cariId: teklif.cariId,
-            cariUnvan: teklif.cariUnvan,
-            tarih: AppFormatters.isoDate.string(from: Date()),
-            araToplam: teklif.araToplam,
-            kdvToplami: teklif.kdvToplami,
-            genelToplam: teklif.genelToplam,
-            durum: "BEKLIYOR",
-            kalemler: sKalemler
-        )
-        
+        let siparisNo = "MB-SIP-\(Int.random(in: 100000...999999))"
+        let sipUuid = UUID().uuidString.lowercased()
+        let tenantId = SupabaseService.shared.tenantId
+        let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+        let cIdInt = teklif.cariId.flatMap { Int($0) }
+        let todayStr = AppFormatters.isoDate.string(from: Date())
+        let deliveryStr = AppFormatters.isoDate.string(from: Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date())
+
+        var rpcPayload: [String: Any] = [
+            "uuid": sipUuid,
+            "tenant_id": tenantId,
+            "siparis_no": siparisNo,
+            "siparis_turu": "ALINAN",
+            "tur": "Satış Siparişi",
+            "cari_unvan": teklif.cariUnvan ?? "",
+            "tarih": todayStr,
+            "teslim_tarihi": deliveryStr,
+            "baglanti_evrak_no": teklif.teklifNo,
+            "ara_toplam": teklif.araToplam,
+            "kdv_toplam": teklif.kdvToplami,
+            "genel_toplam": teklif.genelToplam,
+            "durum": "Bekliyor",
+            "aciklama": teklif.aciklama ?? "Tekliften dönüştürüldü (\(teklif.teklifNo))",
+            "mali_yil": activeYearInt,
+            "detaylar": displayedKalemler.map { k -> [String: Any] in
+                var d: [String: Any] = [
+                    "uuid": UUID().uuidString.lowercased(),
+                    "stok_adi": k.stokAdi,
+                    "miktar": k.miktar,
+                    "birim": k.birim ?? "Adet",
+                    "birim_fiyat": k.birimFiyat,
+                    "kdv_orani": k.kdvOrani,
+                    "toplam_tutar": k.tutar
+                ]
+                if let intStok = k.stokId.flatMap({ Int($0) }) { d["stok_id"] = intStok }
+                if let sKod = k.stokKodu, !sKod.isEmpty { d["stok_kodu"] = sKod }
+                return d
+            }
+        ]
+        if let cid = cIdInt { rpcPayload["cari_id"] = cid }
+
         Task {
             do {
-                let siparisToInsert = yeniSiparis
-                try await SupabaseService.shared.insert(into: "siparisler", item: siparisToInsert)
-                
-                // Copy line items to siparis_detaylar
-                for k in displayedKalemler {
-                    var detPayload: [String: Any] = [
-                        "uuid": UUID().uuidString,
-                        "tenant_id": SupabaseService.shared.tenantId,
-                        "siparis_no": siparisNo,
-                        "stok_adi": k.stokAdi,
-                        "miktar": k.miktar,
-                        "birim": k.birim ?? "Adet",
-                        "birim_fiyat": k.birimFiyat,
-                        "kdv_orani": k.kdvOrani,
-                        "tutar": k.tutar,
-                        "is_deleted": false
-                    ]
-                    if let sIdInt = Int(siparisToInsert.id) {
-                        detPayload["siparis_id"] = sIdInt
+                if let tIdInt = Int(teklif.id),
+                   let res = try? await SupabaseService.shared.rpcRaw(
+                       function: "convert_teklif_to_siparis_atomic",
+                       params: [
+                           "p_teklif_id": tIdInt,
+                           "p_siparis_no": siparisNo,
+                           "p_tenant_id": tenantId
+                       ]
+                   ),
+                   (res["success"] as? Bool) == true {
+                    await MainActor.run {
+                        teklif.durum = "ONAYLANDI"
+                        convertedNotice = "Teklif başarıyla '\(siparisNo)' nolu siparişe dönüştürüldü."
                     }
-                    if let sUuid = siparisToInsert.syncGuid, !sUuid.isEmpty {
-                        detPayload["siparis_uuid"] = sUuid
-                    }
-                    if let stokIdStr = k.stokId, let stokIdInt = Int(stokIdStr) {
-                        detPayload["stok_id"] = stokIdInt
-                    }
-                    if let sKodu = k.stokKodu, !sKodu.isEmpty {
-                        detPayload["stok_kodu"] = sKodu
-                    }
-                    if let d = try? JSONSerialization.data(withJSONObject: detPayload) {
-                        try? await SupabaseService.shared.insertRaw(into: "siparis_detaylar", data: d)
-                    }
+                    return
                 }
-                
-                try await SupabaseService.shared.update(table: "teklifler", id: teklif.id, item: ["durum": "ONAYLANDI"])
+
+                let res = try await SupabaseService.shared.rpcRaw(
+                    function: "save_siparis_atomic",
+                    params: ["p_payload": rpcPayload]
+                )
+                if let ok = res["success"] as? Bool, !ok {
+                    throw NSError(domain: "TeklifDetail", code: 500, userInfo: [NSLocalizedDescriptionKey: (res["message"] as? String) ?? "Siparişe dönüştürülemedi."])
+                }
+                try? await SupabaseService.shared.update(table: "teklifler", id: teklif.id, item: ["durum": "ONAYLANDI"])
                 await MainActor.run {
                     teklif.durum = "ONAYLANDI"
                     convertedNotice = "Teklif başarıyla '\(siparisNo)' nolu siparişe dönüştürüldü."
                 }
             } catch {
-                print("Siparişe dönüştürme hatası: \(error)")
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .userToastNotification,
+                        object: nil,
+                        userInfo: ["message": "Siparişe dönüştürme hatası: \(error.localizedDescription)"]
+                    )
+                }
             }
         }
     }

@@ -781,17 +781,21 @@ public struct DashboardView: View {
                     self.toplamBorc = topBorc
                     self.alacakTakibi = alacakList
                     self.borcTakibi = borcList
-                    self.sonIslemler = recentList
+                    if self.sonIslemler.isEmpty {
+                        self.sonIslemler = recentList
+                    }
                 }
             }
             
             // 2. Kasa ve Banka Mevcutlarını Çek
+            var recentKasaHareketler: [KasaHareket] = []
             do {
                 let kasalar: [KasaBanka] = (try? await SupabaseService.shared.fetch(from: "kasalar")) ?? []
                 let kasaTop = kasalar.reduce(0.0) { $0 + $1.bakiye }
                 let bankalar: [BankaKart] = (try? await SupabaseService.shared.fetch(from: "bankalar")) ?? []
                 let bankaTop = bankalar.reduce(0.0) { $0 + $1.bakiye }
                 let totalNakit = kasaTop + bankaTop
+                recentKasaHareketler = (try? await SupabaseService.shared.fetch(from: "kasa_hareketler", orderBy: "tarih.desc", limit: 15)) ?? []
                 await MainActor.run {
                     self.kasaBankaMevcut = totalNakit
                 }
@@ -799,7 +803,47 @@ public struct DashboardView: View {
             
             // 3. Faturalar ve Satış Hedefleri tablosundan canlı ciroyu ve gerçekleşen satışları çek
             do {
-                let faturalar: [Fatura] = (try? await SupabaseService.shared.fetch(from: "faturalar")) ?? []
+                let faturalar: [Fatura] = (try? await SupabaseService.shared.fetch(from: "faturalar", orderBy: "tarih.desc")) ?? []
+                var realRecentTransactions: [(sortDate: Date, item: DashboardListItem)] = []
+                for f in faturalar.prefix(15) {
+                    let isSatis = f.faturaTuru.localizedCaseInsensitiveContains("satış") || f.faturaTuru.localizedCaseInsensitiveContains("satis")
+                    let d = AppFormatters.parseDate(String(f.tarih.prefix(10))) ?? AppFormatters.parseDate(f.tarih) ?? .distantPast
+                    realRecentTransactions.append((
+                        sortDate: d,
+                        item: DashboardListItem(
+                            title: f.cariUnvan ?? f.faturaNo,
+                            description: "\(isSatis ? "Satış Faturası" : "Alış Faturası") (\(f.faturaNo))",
+                            amount: f.genelToplam,
+                            date: String(f.tarih.prefix(10)),
+                            vade: nil,
+                            type: isSatis ? "In" : "Out"
+                        )
+                    ))
+                }
+                for kh in recentKasaHareketler.prefix(15) {
+                    let isGiris = kh.giren >= kh.cikan && kh.giren > 0
+                    let d = AppFormatters.parseDate(String(kh.tarih.prefix(10))) ?? AppFormatters.parseDate(kh.tarih) ?? .distantPast
+                    realRecentTransactions.append((
+                        sortDate: d,
+                        item: DashboardListItem(
+                            title: kh.cariUnvan ?? kh.aciklama ?? kh.islemTuru,
+                            description: "Kasa \(kh.islemTuru)",
+                            amount: kh.tutar,
+                            date: String(kh.tarih.prefix(10)),
+                            vade: nil,
+                            type: isGiris ? "In" : "Out"
+                        )
+                    ))
+                }
+                let sortedRecentItems = realRecentTransactions
+                    .sorted { $0.sortDate > $1.sortDate }
+                    .prefix(10)
+                    .map { $0.item }
+                if !sortedRecentItems.isEmpty {
+                    await MainActor.run {
+                        self.sonIslemler = Array(sortedRecentItems)
+                    }
+                }
                 let aylikHedefler: [SatisHedefRow] = (try? await SupabaseService.shared.fetch(from: "satis_hedefleri")) ?? []
                 let haftalikHedefler: [SatisHedefRow] = (try? await SupabaseService.shared.fetch(from: "haftalik_satis_hedefleri")) ?? []
                 let today = AppFormatters.isoDate.string(from: Date())

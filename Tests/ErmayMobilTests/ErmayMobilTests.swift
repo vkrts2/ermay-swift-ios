@@ -88,8 +88,15 @@ final class ErmayMobilTests: XCTestCase {
         XCTAssertFalse(lockService.verifyPin("1234"), "verifyPin must return false when pinCode is nil")
         
         lockService.setPin("4826")
+        XCTAssertEqual(lockService.pinLength, 4)
         XCTAssertFalse(lockService.verifyPin("0000"))
         XCTAssertTrue(lockService.verifyPin("4826"))
+        
+        // 5 & 6 digit PIN support test
+        lockService.setPin("582914")
+        XCTAssertEqual(lockService.pinLength, 6)
+        XCTAssertFalse(lockService.verifyPin("5829"))
+        XCTAssertTrue(lockService.verifyPin("582914"))
         lockService.setPin(nil)
     }
     

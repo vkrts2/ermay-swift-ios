@@ -185,7 +185,7 @@ public struct FinansView: View {
                 }
             }
         }
-        for f in faturalar {
+        for f in faturalar where !f.isKapaliOrPaid {
             let vStr = f.vadeTarihi ?? f.tarih
             if let vd = AppFormatters.parseDate(String(vStr.prefix(10))) ?? AppFormatters.parseDate(vStr) {
                 let diff = cal.dateComponents([.day], from: today, to: cal.startOfDay(for: vd)).day ?? 0
@@ -1071,37 +1071,16 @@ public struct FinansView: View {
                             Task {
                                 try? await SupabaseService.shared.insert(into: "cekler", item: newCek)
                                 if let c = selectedCari {
-                                    let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
-                                    let borcVal = isVerilen ? t : 0.0
-                                    let alacakVal = isVerilen ? 0.0 : t
-                                    let newSigned = c.signedBakiye + (borcVal - alacakVal)
-                                    var chPayload: [String: Any] = [
-                                        "uuid": UUID().uuidString.lowercased(),
-                                        "tenant_id": SupabaseService.shared.tenantId,
-                                        "mali_yil": activeYearInt,
-                                        "cari_unvan": c.unvan,
-                                        "evrak_no": cekBelgeNo,
-                                        "belge_no": cekBelgeNo,
-                                        "islem_turu": isVerilen ? "Ödeme (Çek)" : "Tahsilat (Çek)",
-                                        "hareket_turu": isVerilen ? "Ödeme" : "Tahsilat",
-                                        "odeme_sekli": "Çek",
-                                        "borc": borcVal,
-                                        "alacak": alacakVal,
-                                        "bakiye": newSigned,
-                                        "tarih": todayIso,
-                                        "aciklama": "Çek Girişi (\(cekBelgeNo))",
-                                        "is_deleted": false
-                                    ]
-                                    if let cIdInt = Int(c.id) { chPayload["cari_id"] = cIdInt }
-                                    if let cUuid = c.syncGuid { chPayload["cari_uuid"] = cUuid }
-                                    if let chData = try? JSONSerialization.data(withJSONObject: chPayload) {
-                                        try? await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: chData)
-                                    }
-                                    try? await SupabaseService.shared.update(
-                                        table: "cariler",
-                                        id: c.id,
-                                        item: CariBakiyeUpdate(bakiye: newSigned, bakiyeTuru: newSigned >= 0 ? "B" : "A")
+                                    let finReq = FinancialTransactionRequest(
+                                        cari: c,
+                                        transactionType: isVerilen ? "Ödeme" : "Tahsilat",
+                                        method: "Çek",
+                                        amount: t,
+                                        date: todayIso,
+                                        description: "Çek Girişi (\(cekBelgeNo))",
+                                        documentNo: cekBelgeNo
                                     )
+                                    _ = try? await TransactionService.shared.saveFinancialTransaction(req: finReq)
                                 }
                                 await loadFinansData()
                             }
@@ -1194,62 +1173,21 @@ public struct FinansView: View {
                             let targetBanka = bankalar.first(where: { $0.bankaAdi.localizedCaseInsensitiveContains(yeniKKBanka) }) ?? bankalar.first
                             kkIslemler.insert(item, at: 0)
                             Task {
-                                let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
                                 try? await SupabaseService.shared.insert(into: "kredi_karti_islemler", item: item)
                                 if let c = selectedCari {
-                                    let newSigned = c.signedBakiye - t
-                                    var chPayload: [String: Any] = [
-                                        "uuid": UUID().uuidString.lowercased(),
-                                        "tenant_id": SupabaseService.shared.tenantId,
-                                        "mali_yil": activeYearInt,
-                                        "cari_unvan": c.unvan,
-                                        "evrak_no": kkEvrakNo,
-                                        "belge_no": kkEvrakNo,
-                                        "islem_turu": "Tahsilat (Kredi Kartı)",
-                                        "hareket_turu": "Tahsilat",
-                                        "odeme_sekli": "Kredi Kartı",
-                                        "borc": 0.0,
-                                        "alacak": t,
-                                        "bakiye": newSigned,
-                                        "tarih": todayIso,
-                                        "aciklama": yeniKKAciklama.isEmpty ? "Kredi Kartı Tahsilatı" : yeniKKAciklama,
-                                        "is_deleted": false
-                                    ]
-                                    if let cIdInt = Int(c.id) { chPayload["cari_id"] = cIdInt }
-                                    if let cUuid = c.syncGuid { chPayload["cari_uuid"] = cUuid }
-                                    if let chData = try? JSONSerialization.data(withJSONObject: chPayload) {
-                                        try? await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: chData)
-                                    }
-                                    try? await SupabaseService.shared.update(
-                                        table: "cariler",
-                                        id: c.id,
-                                        item: CariBakiyeUpdate(bakiye: newSigned, bakiyeTuru: newSigned >= 0 ? "B" : "A")
+                                    let bankAccount = targetBanka.map { KasaBanka(id: String($0.id ?? 1), hesapAdi: $0.bankaAdi, hesapTuru: "BANKA") }
+                                    let finReq = FinancialTransactionRequest(
+                                        cari: c,
+                                        transactionType: "Tahsilat",
+                                        method: "Kredi Kartı",
+                                        amount: t,
+                                        date: todayIso,
+                                        description: yeniKKAciklama.isEmpty ? "Kredi Kartı Tahsilatı" : yeniKKAciklama,
+                                        selectedHesap: bankAccount,
+                                        documentNo: kkEvrakNo,
+                                        forwardedSupplier: selectedYonCari
                                     )
-                                }
-                                if selectedYonCari == nil, let b = targetBanka {
-                                    var bhPayload: [String: Any] = [
-                                        "uuid": UUID().uuidString.lowercased(),
-                                        "tenant_id": SupabaseService.shared.tenantId,
-                                        "mali_yil": activeYearInt,
-                                        "banka_id": b.id ?? 1,
-                                        "cari_unvan": selectedCari?.unvan ?? "Müşteri",
-                                        "evrak_no": kkEvrakNo,
-                                        "belge_no": kkEvrakNo,
-                                        "islem_turu": "TAHSILAT",
-                                        "hareket_turu": "Tahsilat",
-                                        "giren": t,
-                                        "cikan": 0.0,
-                                        "yatan": t,
-                                        "ceken": 0.0,
-                                        "tutar": t,
-                                        "tarih": todayIso,
-                                        "aciklama": yeniKKAciklama.isEmpty ? "POS / Kredi Kartı Tahsilatı" : yeniKKAciklama,
-                                        "is_deleted": false
-                                    ]
-                                    if let cIdStr = selectedCari?.id, let cIdInt = Int(cIdStr) { bhPayload["cari_id"] = cIdInt }
-                                    if let bhData = try? JSONSerialization.data(withJSONObject: bhPayload) {
-                                        try? await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bhData)
-                                    }
+                                    _ = try? await TransactionService.shared.saveFinancialTransaction(req: finReq)
                                 }
                                 await loadFinansData()
                             }
@@ -1347,62 +1285,21 @@ public struct FinansView: View {
                             let targetBanka = bankalar.first(where: { $0.bankaAdi.localizedCaseInsensitiveContains(yeniEftBanka) }) ?? bankalar.first
                             eftIslemler.insert(item, at: 0)
                             Task {
-                                let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
                                 try? await SupabaseService.shared.insert(into: "eft_islemler", item: item)
                                 if let c = selectedCari {
-                                    let newSigned = c.signedBakiye - t
-                                    var chPayload: [String: Any] = [
-                                        "uuid": UUID().uuidString.lowercased(),
-                                        "tenant_id": SupabaseService.shared.tenantId,
-                                        "mali_yil": activeYearInt,
-                                        "cari_unvan": c.unvan,
-                                        "evrak_no": eftEvrakNo,
-                                        "belge_no": eftEvrakNo,
-                                        "islem_turu": "Tahsilat (Havale / EFT)",
-                                        "hareket_turu": "Tahsilat",
-                                        "odeme_sekli": "Havale / EFT",
-                                        "borc": 0.0,
-                                        "alacak": t,
-                                        "bakiye": newSigned,
-                                        "tarih": todayIso,
-                                        "aciklama": yeniEftAciklama.isEmpty ? "Havale / EFT Tahsilatı" : yeniEftAciklama,
-                                        "is_deleted": false
-                                    ]
-                                    if let cIdInt = Int(c.id) { chPayload["cari_id"] = cIdInt }
-                                    if let cUuid = c.syncGuid { chPayload["cari_uuid"] = cUuid }
-                                    if let chData = try? JSONSerialization.data(withJSONObject: chPayload) {
-                                        try? await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: chData)
-                                    }
-                                    try? await SupabaseService.shared.update(
-                                        table: "cariler",
-                                        id: c.id,
-                                        item: CariBakiyeUpdate(bakiye: newSigned, bakiyeTuru: newSigned >= 0 ? "B" : "A")
+                                    let bankAccount = targetBanka.map { KasaBanka(id: String($0.id ?? 1), hesapAdi: $0.bankaAdi, hesapTuru: "BANKA") }
+                                    let finReq = FinancialTransactionRequest(
+                                        cari: c,
+                                        transactionType: "Tahsilat",
+                                        method: "Havale / EFT",
+                                        amount: t,
+                                        date: todayIso,
+                                        description: yeniEftAciklama.isEmpty ? "Havale / EFT Tahsilatı" : yeniEftAciklama,
+                                        selectedHesap: bankAccount,
+                                        documentNo: eftEvrakNo,
+                                        forwardedSupplier: selectedYonCari
                                     )
-                                }
-                                if selectedYonCari == nil, let b = targetBanka {
-                                    var bhPayload: [String: Any] = [
-                                        "uuid": UUID().uuidString.lowercased(),
-                                        "tenant_id": SupabaseService.shared.tenantId,
-                                        "mali_yil": activeYearInt,
-                                        "banka_id": b.id ?? 1,
-                                        "cari_unvan": selectedCari?.unvan ?? "Müşteri",
-                                        "evrak_no": eftEvrakNo,
-                                        "belge_no": eftEvrakNo,
-                                        "islem_turu": "TAHSILAT",
-                                        "hareket_turu": "Tahsilat",
-                                        "giren": t,
-                                        "cikan": 0.0,
-                                        "yatan": t,
-                                        "ceken": 0.0,
-                                        "tutar": t,
-                                        "tarih": todayIso,
-                                        "aciklama": yeniEftAciklama.isEmpty ? "Havale / EFT Tahsilatı" : yeniEftAciklama,
-                                        "is_deleted": false
-                                    ]
-                                    if let cIdStr = selectedCari?.id, let cIdInt = Int(cIdStr) { bhPayload["cari_id"] = cIdInt }
-                                    if let bhData = try? JSONSerialization.data(withJSONObject: bhPayload) {
-                                        try? await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bhData)
-                                    }
+                                    _ = try? await TransactionService.shared.saveFinancialTransaction(req: finReq)
                                 }
                                 await loadFinansData()
                             }

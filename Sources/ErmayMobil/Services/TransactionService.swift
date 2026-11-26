@@ -11,6 +11,12 @@ public struct FinancialTransactionRequest {
     public var description: String
     public var selectedHesap: KasaBanka?
     public var isAcilisFisi: Bool
+    public var documentNo: String?
+    public var forwardedSupplier: CariKart?
+    public var forwardedSupplierName: String?
+    public var extraCekPayload: [String: Any]?
+    public var extraKrediKartiPayload: [String: Any]?
+    public var extraEftPayload: [String: Any]?
     
     public init(
         id: Int? = nil,
@@ -21,7 +27,13 @@ public struct FinancialTransactionRequest {
         date: String = AppFormatters.isoDate.string(from: Date()),
         description: String = "",
         selectedHesap: KasaBanka? = nil,
-        isAcilisFisi: Bool = false
+        isAcilisFisi: Bool = false,
+        documentNo: String? = nil,
+        forwardedSupplier: CariKart? = nil,
+        forwardedSupplierName: String? = nil,
+        extraCekPayload: [String: Any]? = nil,
+        extraKrediKartiPayload: [String: Any]? = nil,
+        extraEftPayload: [String: Any]? = nil
     ) {
         self.id = id
         self.cari = cari
@@ -32,6 +44,12 @@ public struct FinancialTransactionRequest {
         self.description = description
         self.selectedHesap = selectedHesap
         self.isAcilisFisi = isAcilisFisi
+        self.documentNo = documentNo
+        self.forwardedSupplier = forwardedSupplier
+        self.forwardedSupplierName = forwardedSupplierName
+        self.extraCekPayload = extraCekPayload
+        self.extraKrediKartiPayload = extraKrediKartiPayload
+        self.extraEftPayload = extraEftPayload
     }
 }
 
@@ -390,11 +408,15 @@ public final class TransactionService: @unchecked Sendable {
     public static let shared = TransactionService()
     private init() {}
     
-    private func getEvrakNoPrefix(method: String) -> String {
-        if method.contains("Kredi") { return "MB-KK-" }
-        if method.contains("EFT") || method.contains("Havale") { return "MB-EFT-" }
-        if method.contains("Çek") { return "MB-CK-" }
-        return "MB-TS-"
+    private func getEvrakNoPrefix(transactionType: String, method: String) -> String {
+        if method.localizedCaseInsensitiveContains("kredi") { return "MB-KK-" }
+        if method.localizedCaseInsensitiveContains("eft") || method.localizedCaseInsensitiveContains("havale") { return "MB-EFT-" }
+        if method.localizedCaseInsensitiveContains("çek") || method.localizedCaseInsensitiveContains("cek") { return "MB-CK-" }
+        if method.localizedCaseInsensitiveContains("dekont") || transactionType.localizedCaseInsensitiveContains("dekont") { return "MB-DKT-" }
+        if transactionType.localizedCaseInsensitiveContains("ödeme") || transactionType.localizedCaseInsensitiveContains("odeme") || transactionType.localizedCaseInsensitiveContains("tediye") {
+            return "MB-TED-"
+        }
+        return "MB-THS-"
     }
     
     // MARK: - Save Financial Transaction (Atomic PostgreSQL RPC: api_save_financial_transaction)
@@ -402,17 +424,40 @@ public final class TransactionService: @unchecked Sendable {
         guard req.amount > 0 else { return false }
 
         let tenantId = SupabaseService.shared.tenantId
-        let isOdeme = req.transactionType == "Ödeme" || req.transactionType == "Borç Dekontu" || req.transactionType == "Borçlandır"
-        let evrakNo = getEvrakNoPrefix(method: req.method) + AppFormatters.isoDate.string(from: Date()).replacingOccurrences(of: "-", with: "") + "\(Int.random(in: 100...999))"
+        let isOdeme = req.transactionType.localizedCaseInsensitiveContains("ödeme") ||
+                      req.transactionType.localizedCaseInsensitiveContains("odeme") ||
+                      req.transactionType.localizedCaseInsensitiveContains("tediye") ||
+                      req.transactionType.localizedCaseInsensitiveContains("borç") ||
+                      req.transactionType.localizedCaseInsensitiveContains("borc")
+        let defaultEvrakNo = getEvrakNoPrefix(transactionType: req.transactionType, method: req.method) + AppFormatters.isoDate.string(from: Date()).replacingOccurrences(of: "-", with: "") + "-\(Int.random(in: 100...999))"
+        let rawDocNo = (req.documentNo ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let evrakNo: String
+        if rawDocNo.isEmpty {
+            evrakNo = defaultEvrakNo
+        } else if rawDocNo.hasPrefix("MB-") {
+            evrakNo = rawDocNo
+        } else {
+            evrakNo = "MB-\(rawDocNo)"
+        }
         let isAcilis = req.isAcilisFisi
         let islemTuru = isAcilis ? "\(req.transactionType) (Açılış Fişi)" : "\(req.transactionType) (\(req.method))"
         let aciklama = isAcilis ? "[Açılış Fişi] \(req.description)".trimmingCharacters(in: .whitespaces) : "[\(req.method)] \(req.description)".trimmingCharacters(in: .whitespaces)
         let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
         let cIdInt = Int(req.cari.id)
+        let refId = UUID().uuidString.lowercased()
         let txUuid = UUID().uuidString.lowercased()
+
+        // Resolve optional forwarded supplier (Yönlendirilen Tedarikçi)
+        var resolvedSupplier: CariKart? = req.forwardedSupplier
+        let trimmedSupplierName = (req.forwardedSupplierName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if resolvedSupplier == nil && !trimmedSupplierName.isEmpty {
+            let cachedCariler = await MainActor.run { DataStore.shared.cariler }
+            resolvedSupplier = cachedCariler.first(where: { $0.unvan.localizedCaseInsensitiveContains(trimmedSupplierName) })
+        }
 
         var cariHareket: [String: Any] = [
             "uuid": txUuid,
+            "ref_id": refId,
             "tenant_id": tenantId,
             "cari_unvan": req.cari.unvan,
             "tarih": req.date,
@@ -420,30 +465,93 @@ public final class TransactionService: @unchecked Sendable {
             "belge_no": evrakNo,
             "islem_turu": islemTuru,
             "hareket_turu": isOdeme ? "Borç" : "Alacak",
+            "odeme_sekli": req.method,
             "borc": isOdeme ? req.amount : 0.0,
             "alacak": !isOdeme ? req.amount : 0.0,
             "aciklama": aciklama,
-            "mali_yil": activeYearInt
+            "mali_yil": activeYearInt,
+            "is_deleted": false
         ]
         if let cid = cIdInt, cid > 0 { cariHareket["cari_id"] = cid }
         if let cuuid = req.cari.syncGuid, !cuuid.isEmpty { cariHareket["cari_uuid"] = cuuid }
 
         var payload: [String: Any] = [
             "tenant_id": tenantId,
-            "idempotency_key": "swift-fin-\(txUuid)",
+            "idempotency_key": "swift-fin-\(refId)",
+            "ref_id": refId,
             "mali_yil": activeYearInt,
             "p_cari_hareket": cariHareket
         ]
+
+        var supplierHareketForFallback: [String: Any]? = nil
+        if let sup = resolvedSupplier {
+            var supH: [String: Any] = [
+                "uuid": UUID().uuidString.lowercased(),
+                "ref_id": refId,
+                "tenant_id": tenantId,
+                "cari_unvan": sup.unvan,
+                "tarih": req.date,
+                "evrak_no": evrakNo,
+                "belge_no": evrakNo,
+                "islem_turu": "Yönlendirilen Ödeme (\(req.method))",
+                "hareket_turu": "Borç",
+                "odeme_sekli": req.method,
+                "borc": req.amount,
+                "alacak": 0.0,
+                "aciklama": "[\(req.cari.unvan) -> \(sup.unvan)] \(aciklama)",
+                "mali_yil": activeYearInt,
+                "is_deleted": false
+            ]
+            if let sid = Int(sup.id), sid > 0 { supH["cari_id"] = sid }
+            if let suuid = sup.syncGuid, !suuid.isEmpty { supH["cari_uuid"] = suuid }
+            payload["p_supplier_hareket"] = supH
+            supplierHareketForFallback = supH
+        } else if !trimmedSupplierName.isEmpty {
+            let supH: [String: Any] = [
+                "uuid": UUID().uuidString.lowercased(),
+                "ref_id": refId,
+                "tenant_id": tenantId,
+                "cari_unvan": trimmedSupplierName,
+                "tarih": req.date,
+                "evrak_no": evrakNo,
+                "belge_no": evrakNo,
+                "islem_turu": "Yönlendirilen Ödeme (\(req.method))",
+                "hareket_turu": "Borç",
+                "odeme_sekli": req.method,
+                "borc": req.amount,
+                "alacak": 0.0,
+                "aciklama": "[\(req.cari.unvan) -> \(trimmedSupplierName)] \(aciklama)",
+                "mali_yil": activeYearInt,
+                "is_deleted": false
+            ]
+            payload["p_supplier_hareket"] = supH
+            supplierHareketForFallback = supH
+        }
+
+        if let cekDict = req.extraCekPayload {
+            payload["p_cek"] = cekDict
+        }
+        if let kkDict = req.extraKrediKartiPayload {
+            payload["p_kredi_karti"] = kkDict
+        }
+        if let eftDict = req.extraEftPayload {
+            payload["p_eft"] = eftDict
+        }
 
         let isDekontOrCek = req.method.localizedCaseInsensitiveContains("dekont") ||
                             req.method.localizedCaseInsensitiveContains("çek") ||
                             req.method.localizedCaseInsensitiveContains("cek") ||
                             req.transactionType.localizedCaseInsensitiveContains("dekont")
-        if !isAcilis && !isDekontOrCek, let hesap = req.selectedHesap {
+        let hasForwardedSupplier = (resolvedSupplier != nil || !trimmedSupplierName.isEmpty)
+        var kasaHareketForFallback: [String: Any]? = nil
+        var bankaHareketForFallback: [String: Any]? = nil
+
+        if !isAcilis && !isDekontOrCek && !hasForwardedSupplier, let hesap = req.selectedHesap {
             let isKasa = hesap.hesapTuru == "KASA"
             if isKasa {
                 var kh: [String: Any] = [
                     "uuid": UUID().uuidString.lowercased(),
+                    "ref_id": refId,
                     "tenant_id": tenantId,
                     "hesap_id": hesap.id,
                     "tarih": req.date,
@@ -458,14 +566,17 @@ public final class TransactionService: @unchecked Sendable {
                     "tutar": req.amount,
                     "cari_unvan": req.cari.unvan,
                     "aciklama": aciklama,
-                    "mali_yil": activeYearInt
+                    "mali_yil": activeYearInt,
+                    "is_deleted": false
                 ]
                 if let kid = Int(hesap.id), kid > 0 { kh["kasa_id"] = kid }
                 if let cid = cIdInt, cid > 0 { kh["cari_id"] = cid }
                 payload["p_kasa_hareket"] = kh
+                kasaHareketForFallback = kh
             } else {
                 var bh: [String: Any] = [
                     "uuid": UUID().uuidString.lowercased(),
+                    "ref_id": refId,
                     "tenant_id": tenantId,
                     "tarih": req.date,
                     "evrak_no": evrakNo,
@@ -479,22 +590,51 @@ public final class TransactionService: @unchecked Sendable {
                     "tutar": req.amount,
                     "cari_unvan": req.cari.unvan,
                     "aciklama": aciklama,
-                    "mali_yil": activeYearInt
+                    "mali_yil": activeYearInt,
+                    "is_deleted": false
                 ]
                 if let bid = Int(hesap.id), bid > 0 { bh["banka_id"] = bid }
                 if let cid = cIdInt, cid > 0 { bh["cari_id"] = cid }
                 payload["p_banka_hareket"] = bh
+                bankaHareketForFallback = bh
             }
         }
 
-        let res = try await SupabaseService.shared.rpcRaw(
-            function: "api_save_financial_transaction",
-            params: ["payload": payload]
-        )
-        if let ok = res["success"] as? Bool, !ok {
-            let msg = (res["message"] as? String) ?? "Finansal işlem kaydedilemedi."
-            throw NSError(domain: "TransactionService", code: 500, userInfo: [NSLocalizedDescriptionKey: msg])
+        do {
+            let res = try await SupabaseService.shared.rpcRaw(
+                function: "api_save_financial_transaction",
+                params: ["payload": payload]
+            )
+            if let ok = res["success"] as? Bool, !ok {
+                let msg = (res["message"] as? String) ?? "Finansal işlem kaydedilemedi."
+                throw NSError(domain: "TransactionService", code: 500, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
+        } catch {
+            // Fallback ONLY if RPC is not deployed on server; never overwrite cariler.bakiye from stale client memory (PostgreSQL trigger recalculates it)
+            let errText = error.localizedDescription
+            if errText.contains("PGRST202") || errText.contains("42883") || errText.contains("Could not find the function") {
+                if !req.cari.id.isEmpty {
+                    let chData = try JSONSerialization.data(withJSONObject: cariHareket)
+                    try await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: chData)
+                }
+                if let supH = supplierHareketForFallback {
+                    let shData = try JSONSerialization.data(withJSONObject: supH)
+                    try await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: shData)
+                }
+                if let kh = kasaHareketForFallback {
+                    let khData = try JSONSerialization.data(withJSONObject: kh)
+                    try await SupabaseService.shared.insertRaw(into: "kasa_hareketler", data: khData)
+                }
+                if let bh = bankaHareketForFallback {
+                    let bhData = try JSONSerialization.data(withJSONObject: bh)
+                    try await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bhData)
+                }
+            } else {
+                throw error
+            }
         }
+
+        await DataStore.shared.loadCariler(force: true)
         return true
     }
 
@@ -633,6 +773,8 @@ public final class TransactionService: @unchecked Sendable {
                     savedFatura.syncGuid = fuuid
                 }
                 await DataStore.shared.loadFaturalarCacheFirst(forceCloudRefresh: true)
+                await DataStore.shared.loadCarilerCacheFirst(forceCloudRefresh: true)
+                await DataStore.shared.loadStoklarCacheFirst(forceCloudRefresh: true)
                 return savedFatura
             } else {
                 let errMsg = res.message ?? "Fatura atomik olarak kaydedilemedi."
@@ -643,5 +785,28 @@ public final class TransactionService: @unchecked Sendable {
             print("[TransactionService] Atomik fatura kaydı başarısız: \(error.localizedDescription)")
             throw error
         }
+    }
+
+    // MARK: - Delete / Cancel Invoice Atomically (Soft-Delete + Auto-Repair System Integrity)
+    public func deleteInvoiceAtomic(fatura: Fatura) async throws {
+        let fId = fatura.id
+        let fNo = fatura.faturaNo
+        try await SupabaseService.shared.delete(table: "faturalar", id: fId)
+        if let intId = Int(fId) {
+            try? await SupabaseService.shared.deleteWhere(table: "fatura_detaylar", filter: "fatura_id=eq.\(intId)")
+            try? await SupabaseService.shared.deleteWhere(table: "cari_hareketler", filter: "fatura_id=eq.\(intId)")
+            try? await SupabaseService.shared.deleteWhere(table: "stok_hareketler", filter: "fatura_id=eq.\(intId)")
+        }
+        if !fNo.isEmpty, let encodedNo = fNo.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            try? await SupabaseService.shared.deleteWhere(table: "cari_hareketler", filter: "evrak_no=eq.\(encodedNo)")
+            try? await SupabaseService.shared.deleteWhere(table: "stok_hareketler", filter: "evrak_no=eq.\(encodedNo)")
+            try? await SupabaseService.shared.deleteWhere(table: "kasa_hareketler", filter: "evrak_no=eq.\(encodedNo)")
+            try? await SupabaseService.shared.deleteWhere(table: "banka_hareketler", filter: "evrak_no=eq.\(encodedNo)")
+        }
+        _ = try? await SupabaseService.shared.rpcRaw(
+            function: "auto_repair_system_integrity",
+            params: ["p_tenant_id": SupabaseService.shared.tenantId]
+        )
+        await DataStore.shared.loadAll(force: true)
     }
 }

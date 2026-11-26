@@ -6,15 +6,17 @@ public struct StokHareketItem: Identifiable, Hashable {
     public let islemTuru: String
     public let aciklama: String
     public let miktar: Double
+    public let birimFiyat: Double
     public let kalanMiktar: Double
     public let isGiris: Bool
     
-    public init(id: String = UUID().uuidString, tarih: String, islemTuru: String, aciklama: String, miktar: Double, kalanMiktar: Double, isGiris: Bool) {
+    public init(id: String = UUID().uuidString, tarih: String, islemTuru: String, aciklama: String, miktar: Double, birimFiyat: Double = 0.0, kalanMiktar: Double, isGiris: Bool) {
         self.id = id
         self.tarih = tarih
         self.islemTuru = islemTuru
         self.aciklama = aciklama
         self.miktar = miktar
+        self.birimFiyat = birimFiyat
         self.kalanMiktar = kalanMiktar
         self.isGiris = isGiris
     }
@@ -52,9 +54,12 @@ public struct StoklarView: View {
     
     // Modals
     @State private var showCalendar: Bool = false
+    @State private var filterDate: Date = Date()
+    @State private var isDateFilterActive: Bool = false
     @State private var showGroupModal: Bool = false
     @State private var newGroupName: String = ""
     @State private var showManualIslemModal: Bool = false
+    @State private var editingHareketId: String? = nil
     @State private var manualIslemTur: String = "GİRİŞ"
     @State private var manualMiktar: String = "1"
     @State private var manualFiyat: String = "0"
@@ -70,6 +75,15 @@ public struct StoklarView: View {
     private let birimler = ["Adet", "Kg", "Mt", "M2"]
     
     public init() {}
+    
+    public var displayedHareketler: [StokHareketItem] {
+        guard isDateFilterActive else { return hareketler }
+        let isoPrefix = AppFormatters.isoDate.string(from: filterDate)
+        let trPrefix = AppFormatters.shortDate.string(from: filterDate)
+        return hareketler.filter { h in
+            h.tarih.hasPrefix(isoPrefix) || h.tarih.hasPrefix(trPrefix)
+        }
+    }
     
     public var filteredStoklar: [StokKart] {
         let baseList: [StokKart]
@@ -254,14 +268,14 @@ public struct StoklarView: View {
                                     .font(.system(size: 12))
                                     .foregroundColor(Color(hex: "64748B"))
                                     .padding(.vertical, 20)
-                            } else if hareketler.isEmpty {
-                                Text("Bu stok kartına ait hareket bulunamadı.")
+                            } else if displayedHareketler.isEmpty {
+                                Text(isDateFilterActive ? "Seçili tarihte hareket bulunamadı." : "Bu stok kartına ait hareket bulunamadı.")
                                     .font(.system(size: 12))
                                     .foregroundColor(Color(hex: "64748B"))
                                     .padding(.vertical, 20)
                             } else {
                                 VStack(spacing: 8) {
-                                    ForEach(hareketler) { h in
+                                    ForEach(displayedHareketler) { h in
                                         let isSelH = selectedHareket?.id == h.id
                                         Button {
                                             selectedHareket = isSelH ? nil : h
@@ -374,13 +388,19 @@ public struct StoklarView: View {
                                 // Row 2: Stok Girişi (F1), Stok Çıkışı (F2)
                                 HStack(spacing: 8) {
                                     desktopFullActionBtn(title: "Stok Girişi (F1)", icon: "plus.square.fill", color: Color(hex: "10B981"), enabled: isEditMode) {
+                                        editingHareketId = nil
                                         manualIslemTur = "GİRİŞ"
+                                        manualMiktar = "1"
                                         manualFiyat = editAlisFiyati
+                                        manualAciklama = ""
                                         showManualIslemModal = true
                                     }
                                     desktopFullActionBtn(title: "Stok Çıkışı (F2)", icon: "minus.square.fill", color: Color(hex: "F59E0B"), enabled: isEditMode) {
+                                        editingHareketId = nil
                                         manualIslemTur = "ÇIKIŞ"
+                                        manualMiktar = "1"
                                         manualFiyat = editSatisFiyati
+                                        manualAciklama = ""
                                         showManualIslemModal = true
                                     }
                                 }
@@ -389,16 +409,41 @@ public struct StoklarView: View {
                                 HStack(spacing: 8) {
                                     desktopFullActionBtn(title: "Düzenle (F3)", icon: "pencil", color: Color(hex: "06B6D4"), enabled: isEditMode && selectedHareket != nil) {
                                         if let h = selectedHareket {
-                                            manualIslemTur = h.islemTuru
+                                            editingHareketId = h.id
+                                            manualIslemTur = h.isGiris ? "GİRİŞ" : "ÇIKIŞ"
                                             manualMiktar = String(h.miktar)
+                                            manualFiyat = h.birimFiyat > 0 ? String(h.birimFiyat) : (h.isGiris ? editAlisFiyati : editSatisFiyati)
                                             manualAciklama = h.aciklama
                                             showManualIslemModal = true
                                         }
                                     }
                                     desktopFullActionBtn(title: "İşlemi Sil", icon: "trash.fill", color: Color(hex: "EF4444"), enabled: isEditMode && selectedHareket != nil) {
-                                        if let h = selectedHareket {
-                                            hareketler.removeAll { $0.id == h.id }
+                                        if let h = selectedHareket, var sel = selectedStok {
+                                            let targetHId = h.id
+                                            let delta = h.isGiris ? -h.miktar : h.miktar
+                                            sel.mevcutMiktar += delta
+                                            selectedStok = sel
+                                            if let idx = stoklar.firstIndex(where: { $0.id == sel.id }) {
+                                                stoklar[idx] = sel
+                                            }
+                                            hareketler.removeAll { $0.id == targetHId }
                                             selectedHareket = nil
+                                            Task {
+                                                do {
+                                                    try await SupabaseService.shared.delete(table: "stok_hareketler", id: targetHId)
+                                                    try await DataStore.shared.saveStok(sel, isUpdate: true)
+                                                    await loadLiveStoklar()
+                                                    await loadStokHareketler(for: sel)
+                                                } catch {
+                                                    await MainActor.run {
+                                                        NotificationCenter.default.post(
+                                                            name: .userToastNotification,
+                                                            object: nil,
+                                                            userInfo: ["message": "Stok hareketi silinemedi: \(error.localizedDescription)"]
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -436,19 +481,65 @@ public struct StoklarView: View {
             .sheet(isPresented: $showCalendar) {
                 VStack(spacing: 20) {
                     Text("Tarih Filtresi").font(.system(size: 18, weight: .bold)).foregroundColor(.white).padding(.top, 20)
-                    DatePicker("Tarih", selection: .constant(Date()), displayedComponents: .date)
+                    DatePicker("Tarih", selection: $filterDate, displayedComponents: .date)
                         .datePickerStyle(.graphical)
+                        .colorScheme(.dark)
                         .padding()
-                    Button("Uygula") { showCalendar = false }
+                    HStack(spacing: 12) {
+                        Button("Filtreyi Temizle") {
+                            isDateFilterActive = false
+                            showCalendar = false
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(Color.white.opacity(0.12))
+                        .cornerRadius(10)
+                        
+                        Button("Uygula") {
+                            isDateFilterActive = true
+                            showCalendar = false
+                        }
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.white)
-                        .padding(.horizontal, 40)
+                        .padding(.horizontal, 30)
                         .padding(.vertical, 12)
                         .background(Color(hex: "2563EB"))
                         .cornerRadius(10)
+                    }
                     Spacer()
                 }
                 .presentationDetents([.medium])
+            }
+            .alert("Yeni Stok Grubu Ekle", isPresented: $showGroupModal) {
+                TextField("Grup Adı...", text: $newGroupName)
+                Button("Ekle") {
+                    let trimmed = newGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    if !gruplar.contains(trimmed) {
+                        gruplar.append(trimmed)
+                    }
+                    editKategori = trimmed
+                    newGroupName = ""
+                    Task {
+                        let payload: [String: Any] = [
+                            "uuid": UUID().uuidString.lowercased(),
+                            "tenant_id": SupabaseService.shared.tenantId,
+                            "grup_adi": trimmed,
+                            "ad": trimmed,
+                            "is_deleted": false
+                        ]
+                        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                            try? await SupabaseService.shared.insertRaw(into: "stok_gruplar", data: data)
+                        }
+                    }
+                }
+                Button("Vazgeç", role: .cancel) {
+                    newGroupName = ""
+                }
+            } message: {
+                Text("Yeni stok grubu adını giriniz.")
             }
             .alert("Stok Kartını Sil", isPresented: $showDeleteConfirm) {
                 Button("Sil", role: .destructive) {
@@ -501,6 +592,27 @@ public struct StoklarView: View {
     private func loadLiveStoklar() async {
         await dataStore.loadStoklarCacheFirst(forceCloudRefresh: true)
         self.stoklar = dataStore.stoklar
+        
+        struct StokGrupRow: Decodable {
+            let grup_adi: String?
+            let ad: String?
+        }
+        let remoteGroups: [StokGrupRow] = (try? await SupabaseService.shared.fetch(from: "stok_gruplar")) ?? []
+        var mergedGroups = Set<String>(["Genel", "Rulman", "Sızdırmazlık", "Madeni Yağ", "Bağlantı"])
+        for rg in remoteGroups {
+            if let g = (rg.grup_adi ?? rg.ad)?.trimmingCharacters(in: .whitespacesAndNewlines), !g.isEmpty {
+                mergedGroups.insert(g)
+            }
+        }
+        for s in self.stoklar {
+            if let g = s.grupAdi?.trimmingCharacters(in: .whitespacesAndNewlines), !g.isEmpty {
+                mergedGroups.insert(g)
+            }
+        }
+        let sortedGroups = Array(mergedGroups).sorted()
+        await MainActor.run {
+            self.gruplar = sortedGroups
+        }
     }
     
     private func loadStokHareketler(for stok: StokKart) async {
@@ -519,6 +631,7 @@ public struct StoklarView: View {
                 islemTuru: h.islemTuru ?? (isG ? "GİRİŞ" : "ÇIKIŞ"),
                 aciklama: h.aciklama ?? h.cariUnvan ?? "-",
                 miktar: m,
+                birimFiyat: h.birimFiyat,
                 kalanMiktar: running,
                 isGiris: isG
             ))
@@ -643,9 +756,10 @@ public struct StoklarView: View {
                 }
             }
         } else {
+            let generatedKod = editStokKodu.isEmpty ? "STK-\(Int.random(in: 100...999))" : editStokKodu
             let newItem = StokKart(
                 id: "",
-                stokKodu: editStokKodu.isEmpty ? "STK-\(Int.random(in: 100...999))" : editStokKodu,
+                stokKodu: generatedKod,
                 stokAdi: editStokAdi,
                 grupAdi: editKategori,
                 birim: editBirim,
@@ -660,6 +774,11 @@ public struct StoklarView: View {
                 do {
                     try await DataStore.shared.saveStok(newItem, isUpdate: false)
                     await loadLiveStoklar()
+                    await MainActor.run {
+                        if let matched = self.stoklar.first(where: { ($0.stokKodu == generatedKod && !generatedKod.isEmpty) || $0.stokAdi == newItem.stokAdi }) {
+                            self.selectedStok = matched
+                        }
+                    }
                 } catch {
                     await MainActor.run {
                         NotificationCenter.default.post(name: .userToastNotification, object: nil, userInfo: ["message": "Stok kaydedilemedi: \(error.localizedDescription)"])
@@ -671,7 +790,7 @@ public struct StoklarView: View {
     
     private func manualIslemSheet() -> some View {
         VStack(spacing: 16) {
-            Text("Stok \(manualIslemTur) İşlemi")
+            Text(editingHareketId != nil ? "Stok Hareketini Düzenle" : "Stok \(manualIslemTur) İşlemi")
                 .font(.system(size: 18, weight: .bold))
                 .foregroundColor(.white)
                 .padding(.top, 20)
@@ -688,29 +807,28 @@ public struct StoklarView: View {
                 let f = Double(manualFiyat.replacingOccurrences(of: ",", with: ".")) ?? 0.0
                 let isG = manualIslemTur == "GİRİŞ"
                 let currentBal = selectedStok?.mevcutMiktar ?? 0.0
-                let newBal = isG ? (currentBal + m) : (currentBal - m)
+                let oldAdjustment: Double
+                if let editId = editingHareketId, let oldH = hareketler.first(where: { $0.id == editId }) {
+                    oldAdjustment = oldH.isGiris ? -oldH.miktar : oldH.miktar
+                } else {
+                    oldAdjustment = 0.0
+                }
+                let newBal = currentBal + oldAdjustment + (isG ? m : -m)
                 let todayStr = AppFormatters.isoDate.string(from: Date())
                 let desc = manualAciklama.isEmpty ? "Manuel \(manualIslemTur)" : manualAciklama
+                let activeEditId = editingHareketId
                 
-                let newHareket = StokHareketItem(
-                    tarih: AppFormatters.shortDate.string(from: Date()),
-                    islemTuru: manualIslemTur,
-                    aciklama: desc,
-                    miktar: m,
-                    kalanMiktar: newBal,
-                    isGiris: isG
-                )
-                hareketler.insert(newHareket, at: 0)
                 if var sel = selectedStok {
                     sel.mevcutMiktar = newBal
                     selectedStok = sel
                     if let idx = stoklar.firstIndex(where: { $0.id == sel.id }) {
                         stoklar[idx] = sel
                     }
+                    let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
                     Task {
                         var hPayload: [String: Any] = [
-                            "uuid": UUID().uuidString.lowercased(),
                             "tenant_id": SupabaseService.shared.tenantId,
+                            "mali_yil": activeYearInt,
                             "stok_adi": sel.stokAdi,
                             "stok_kodu": sel.stokKodu ?? "",
                             "islem_turu": manualIslemTur,
@@ -729,15 +847,34 @@ public struct StoklarView: View {
                         if let sIdInt = Int(sel.id) {
                             hPayload["stok_id"] = sIdInt
                         }
-                        if let hData = try? JSONSerialization.data(withJSONObject: hPayload) {
-                            try? await SupabaseService.shared.insertRaw(into: "stok_hareketler", data: hData)
+                        if let editId = activeEditId {
+                            if let hData = try? JSONSerialization.data(withJSONObject: hPayload) {
+                                do {
+                                    try await SupabaseService.shared.updateRaw(table: "stok_hareketler", id: editId, data: hData)
+                                } catch {
+                                    try? await SupabaseService.shared.delete(table: "stok_hareketler", id: editId)
+                                    var insertPayload = hPayload
+                                    insertPayload["uuid"] = UUID().uuidString.lowercased()
+                                    if let insData = try? JSONSerialization.data(withJSONObject: insertPayload) {
+                                        try? await SupabaseService.shared.insertRaw(into: "stok_hareketler", data: insData)
+                                    }
+                                }
+                            }
+                        } else {
+                            hPayload["uuid"] = UUID().uuidString.lowercased()
+                            if let hData = try? JSONSerialization.data(withJSONObject: hPayload) {
+                                try? await SupabaseService.shared.insertRaw(into: "stok_hareketler", data: hData)
+                            }
                         }
                         try? await DataStore.shared.saveStok(sel, isUpdate: true)
+                        await loadStokHareketler(for: sel)
                     }
                 }
+                editingHareketId = nil
+                selectedHareket = nil
                 showManualIslemModal = false
             } label: {
-                Text("Hareketi Kaydet")
+                Text(editingHareketId != nil ? "Değişiklikleri Kaydet" : "Hareketi Kaydet")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)

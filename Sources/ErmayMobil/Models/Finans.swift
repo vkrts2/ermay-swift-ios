@@ -10,6 +10,7 @@ public struct KasaBanka: Identifiable, Codable, Hashable {
     public var iban: String?
     public var dovizCinsi: String?
     public var bakiye: Double
+    public var acilisBakiye: Double?
     public var syncGuid: String?
     public var tenantId: String?
     
@@ -31,6 +32,7 @@ public struct KasaBanka: Identifiable, Codable, Hashable {
         case bakiye
         case guncelBakiye = "guncel_bakiye"
         case acilisBakiye = "acilis_bakiye"
+        case acilisBakiyesi = "acilis_bakiyesi"
         case syncGuid = "sync_guid"
         case tenantId = "tenant_id"
     }
@@ -45,6 +47,7 @@ public struct KasaBanka: Identifiable, Codable, Hashable {
         iban: String? = nil,
         dovizCinsi: String? = "TRY",
         bakiye: Double = 0.0,
+        acilisBakiye: Double? = nil,
         syncGuid: String? = UUID().uuidString,
         tenantId: String? = nil
     ) {
@@ -57,6 +60,7 @@ public struct KasaBanka: Identifiable, Codable, Hashable {
         self.iban = iban
         self.dovizCinsi = dovizCinsi
         self.bakiye = bakiye
+        self.acilisBakiye = acilisBakiye ?? bakiye
         self.syncGuid = syncGuid
         self.tenantId = tenantId
     }
@@ -82,13 +86,16 @@ public struct KasaBanka: Identifiable, Codable, Hashable {
         self.iban = try? c.decode(String.self, forKey: .iban)
         self.dovizCinsi = (try? c.decode(String.self, forKey: .paraBirimi)) ?? (try? c.decode(String.self, forKey: .dovizTuru)) ?? (try? c.decode(String.self, forKey: .dovizCinsi)) ?? "TRY"
         
+        let decodedAcilis = (try? c.decode(Double.self, forKey: .acilisBakiye)) ?? (try? c.decode(Double.self, forKey: .acilisBakiyesi))
+        self.acilisBakiye = decodedAcilis
+        
         if let b = try? c.decode(Double.self, forKey: .bakiye), b != 0 {
             self.bakiye = b
         } else if let gb = try? c.decode(Double.self, forKey: .guncelBakiye) {
             self.bakiye = gb
         } else if let b = try? c.decode(Double.self, forKey: .bakiye) {
             self.bakiye = b
-        } else if let ab = try? c.decode(Double.self, forKey: .acilisBakiye) {
+        } else if let ab = decodedAcilis {
             self.bakiye = ab
         } else {
             self.bakiye = 0.0
@@ -103,13 +110,16 @@ public struct KasaBanka: Identifiable, Codable, Hashable {
         if let intId = Int(id), intId > 0 {
             try c.encode(intId, forKey: .id)
         }
-        let finalUuid = syncGuid ?? (Int(id) == nil ? id : UUID().uuidString)
+        let finalUuid = syncGuid ?? (Int(id) == nil && !id.isEmpty ? id : UUID().uuidString)
         try c.encode(finalUuid, forKey: .uuid)
         try c.encode(hesapAdi, forKey: .kasaAdi)
         try c.encodeIfPresent(dovizCinsi, forKey: .paraBirimi)
         try c.encode(bakiye, forKey: .bakiye)
         try c.encode(bakiye, forKey: .guncelBakiye)
-        try c.encodeIfPresent(tenantId ?? SupabaseService.shared.tenantId, forKey: .tenantId)
+        let resolvedAcilis = acilisBakiye ?? bakiye
+        try c.encode(resolvedAcilis, forKey: .acilisBakiye)
+        try c.encode(resolvedAcilis, forKey: .acilisBakiyesi)
+        try c.encode(tenantId ?? SupabaseService.shared.currentTenantId, forKey: .tenantId)
     }
 }
 

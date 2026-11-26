@@ -14,7 +14,7 @@ public final class AuthService: ObservableObject {
     @Published public var errorMessage: String? = nil
     
     // Secure Keychain Storage (OWASP MASVS-STORAGE-1)
-    private let keychain = Keychain(service: "com.ermay.muhasebe").accessibility(.afterFirstUnlock)
+    private let keychain = Keychain(service: "com.ermay.muhasebe").accessibility(.whenUnlockedThisDeviceOnly)
     private let keychainUserKey = "ermay_secure_user"
     private let legacyUserDefaultsKey = "ermay_saved_user"
     
@@ -28,6 +28,9 @@ public final class AuthService: ObservableObject {
             self.currentUser = user
             self.isAuthenticated = true
             SupabaseService.shared.tenantId = user.tenantId
+            if let tok = user.token, !tok.isEmpty {
+                SupabaseService.shared.setSessionToken(tok)
+            }
             return
         }
         
@@ -222,6 +225,10 @@ public final class AuthService: ObservableObject {
                     let rawTenant = ((verifyRes["tenant_id"] as? String) ?? resolvedTenantFromSalt).trimmingCharacters(in: .whitespacesAndNewlines)
                     let finalTenant = (rawTenant.isEmpty || rawTenant == "default") ? "tenant_ermay_master" : rawTenant
                     let userId = (verifyRes["user_id"] as? String) ?? (verifyRes["user_uuid"] as? String) ?? UUID().uuidString
+                    let sessionTok = ((verifyRes["session_token"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !sessionTok.isEmpty {
+                        SupabaseService.shared.setSessionToken(sessionTok)
+                    }
 
                     let user = User(
                         id: userId,
@@ -229,10 +236,12 @@ public final class AuthService: ObservableObject {
                         username: finalUsername,
                         fullName: finalFullName,
                         role: finalRole,
-                        tenantId: finalTenant
+                        tenantId: finalTenant,
+                        token: sessionTok.isEmpty ? nil : sessionTok
                     )
 
                     SupabaseService.shared.tenantId = finalTenant
+                    UserDefaults.standard.set(finalTenant, forKey: "supabase_tenant_id")
                     if let encoded = try? JSONEncoder().encode(user) {
                         try? keychain.set(encoded, key: keychainUserKey)
                     }
@@ -345,8 +354,16 @@ public final class AuthService: ObservableObject {
     public func logout() {
         try? keychain.remove(keychainUserKey)
         UserDefaults.standard.removeObject(forKey: legacyUserDefaultsKey)
+        UserDefaults.standard.removeObject(forKey: "supabase_tenant_id")
+        UserDefaults.standard.removeObject(forKey: "supabase_active_fiscal_year")
+        UserDefaults.standard.removeObject(forKey: "supabase_available_fiscal_years")
+        UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_url")
+        UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_key")
         self.currentUser = nil
         self.isAuthenticated = false
         SupabaseService.shared.authToken = nil
+        SupabaseService.shared.setSessionToken(nil)
+        PDFService.shared.clearCredentials()
+        DataStore.shared.clearMemoryCache()
     }
 }

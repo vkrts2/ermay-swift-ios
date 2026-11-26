@@ -711,7 +711,7 @@ public struct CariDetailView: View {
             var overdueSum: Double = 0.0
             var overdueFaturalar: [Fatura] = []
             
-            for f in faturalar {
+            for f in faturalar where !f.isKapaliOrPaid {
                 let isAlis = f.faturaTuru.localizedCaseInsensitiveContains("alış") || f.faturaTuru.localizedCaseInsensitiveContains("alis")
                 // Müşteri için satış faturaları borç oluşturur
                 if !isAlis {

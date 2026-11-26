@@ -319,31 +319,37 @@ public final class ReportCalculationService {
             }
             
         case "Ölü Stok Raporu":
-            headers = ["Stok Adı", "Barkod", "Stok Kodu", "Mevcut Miktar", "Çakışma Nedeni"]
-            var seenIds = Set<String>()
-            let byName = Dictionary(grouping: stoklar.filter { !$0.stokAdi.trimmingCharacters(in: .whitespaces).isEmpty }, by: { $0.stokAdi.trimmingCharacters(in: .whitespaces).lowercased() })
-            for (_, grp) in byName where grp.count > 1 {
-                for s in grp {
-                    seenIds.insert(s.id)
-                    rows.append([s.stokAdi, s.barkod ?? "-", s.stokKodu ?? "-", String(format: "%.2f", s.mevcutMiktar), "Aynı İsim"])
+            headers = ["Stok Kodu", "Stok Adı", "Kategori", "Mevcut Miktar", "Maliyet Değeri", "Durum"]
+            let stokHareketler: [StokHareket] = (try? await SupabaseService.shared.fetch(from: "stok_hareketler")) ?? []
+            let detaylar: [FaturaKalem] = (try? await SupabaseService.shared.fetch(from: "fatura_detaylar")) ?? []
+            var soldStokIds = Set<String>()
+            var soldStokNames = Set<String>()
+            for h in stokHareketler where isDateInRange(h.tarih, startDay: startDay, endDay: endDay, isAll: isAll) {
+                let ck = h.cikan > 0 ? h.cikan : ((h.islemTuru ?? "").localizedCaseInsensitiveContains("satış") || (h.islemTuru ?? "").localizedCaseInsensitiveContains("çıkış") ? h.miktar : 0.0)
+                if ck > 0 {
+                    if !h.stokId.isEmpty { soldStokIds.insert(h.stokId) }
+                    if let sAdi = h.stokAdi?.lowercased(), !sAdi.isEmpty { soldStokNames.insert(sAdi) }
                 }
             }
-            let byBarcode = Dictionary(grouping: stoklar.filter { !($0.barkod ?? "").trimmingCharacters(in: .whitespaces).isEmpty }, by: { ($0.barkod ?? "").trimmingCharacters(in: .whitespaces).lowercased() })
-            for (_, grp) in byBarcode where grp.count > 1 {
-                for s in grp where !seenIds.contains(s.id) {
-                    seenIds.insert(s.id)
-                    rows.append([s.stokAdi, s.barkod ?? "-", s.stokKodu ?? "-", String(format: "%.2f", s.mevcutMiktar), "Aynı Barkod"])
-                }
+            for d in detaylar {
+                if let sid = d.stokId, !sid.isEmpty { soldStokIds.insert(sid) }
+                if !d.stokAdi.isEmpty { soldStokNames.insert(d.stokAdi.lowercased()) }
             }
-            let byCode = Dictionary(grouping: stoklar.filter { !($0.stokKodu ?? "").trimmingCharacters(in: .whitespaces).isEmpty }, by: { ($0.stokKodu ?? "").trimmingCharacters(in: .whitespaces).lowercased() })
-            for (_, grp) in byCode where grp.count > 1 {
-                for s in grp where !seenIds.contains(s.id) {
-                    seenIds.insert(s.id)
-                    rows.append([s.stokAdi, s.barkod ?? "-", s.stokKodu ?? "-", String(format: "%.2f", s.mevcutMiktar), "Aynı Stok Kodu"])
-                }
+            let deadStocks = stoklar.filter { s in
+                s.mevcutMiktar > 0 && !soldStokIds.contains(s.id) && !soldStokNames.contains(s.stokAdi.lowercased())
+            }
+            for s in deadStocks {
+                rows.append([
+                    s.stokKodu ?? "-",
+                    s.stokAdi,
+                    s.grupAdi ?? "-",
+                    String(format: "%.2f", s.mevcutMiktar),
+                    formatCurrency(s.mevcutMiktar * s.alisFiyati),
+                    "Hareketsiz (Satış Yok)"
+                ])
             }
             if rows.isEmpty {
-                rows.append(["-", "-", "-", "-", "Çakışan kart bulunamadı"])
+                rows.append(["-", "-", "-", "0.00", formatCurrency(0), "Ölü stok bulunamadı"])
             }
             
         case "Stok Devir Hızı":
@@ -450,22 +456,52 @@ public final class ReportCalculationService {
             }
             
         case "En Çok Satan Ürünler":
-            headers = ["Sıra", "Ürün Adı", "Mevcut Stok", "Satış Fiyatı", "Kategori"]
+            headers = ["Sıra", "Ürün Adı", "Satılan Miktar", "Satış Tutarı", "Kategori"]
             let stokHareketler: [StokHareket] = (try? await SupabaseService.shared.fetch(from: "stok_hareketler")) ?? []
-            let donemH = stokHareketler.filter { isDateInRange($0.tarih, startDay: startDay, endDay: endDay, isAll: isAll) }
-            var satisQty: [String: Double] = [:]
-            for h in donemH {
-                let ck = h.cikan > 0 ? h.cikan : ((h.islemTuru ?? "").localizedCaseInsensitiveContains("satış") ? h.miktar : 0.0)
-                if ck > 0 { satisQty[h.stokId, default: 0.0] += ck }
+            let detaylar: [FaturaKalem] = (try? await SupabaseService.shared.fetch(from: "fatura_detaylar")) ?? []
+            let satisFIds = Set(faturalar.filter {
+                ($0.faturaTuru.localizedCaseInsensitiveContains("satış") || $0.faturaTuru.localizedCaseInsensitiveContains("satis")) &&
+                isDateInRange($0.tarih, startDay: startDay, endDay: endDay, isAll: isAll)
+            }.map { $0.id })
+            
+            var salesByProduct: [String: (name: String, qty: Double, revenue: Double, category: String)] = [:]
+            let stokById = Dictionary(uniqueKeysWithValues: stoklar.map { ($0.id, $0) })
+            
+            for d in detaylar where d.faturaId == nil || satisFIds.contains(d.faturaId!) {
+                let key = d.stokId ?? d.stokAdi
+                guard !key.isEmpty else { continue }
+                let matchedStok = d.stokId != nil ? stokById[d.stokId!] : stoklar.first(where: { $0.stokAdi == d.stokAdi })
+                let cur = salesByProduct[key] ?? (name: !d.stokAdi.isEmpty ? d.stokAdi : (matchedStok?.stokAdi ?? "Ürün"), qty: 0.0, revenue: 0.0, category: matchedStok?.grupAdi ?? "-")
+                salesByProduct[key] = (cur.name, cur.qty + d.miktar, cur.revenue + d.toplamTutar, cur.category)
             }
-            let sorted = stoklar.sorted {
-                let q1 = satisQty[$0.id] ?? 0.0
-                let q2 = satisQty[$1.id] ?? 0.0
-                if q1 != q2 { return q1 > q2 }
-                return $0.mevcutMiktar > $1.mevcutMiktar
+            
+            if salesByProduct.isEmpty {
+                let donemH = stokHareketler.filter { isDateInRange($0.tarih, startDay: startDay, endDay: endDay, isAll: isAll) }
+                for h in donemH {
+                    let ck = h.cikan > 0 ? h.cikan : ((h.islemTuru ?? "").localizedCaseInsensitiveContains("satış") || (h.islemTuru ?? "").localizedCaseInsensitiveContains("çıkış") ? h.miktar : 0.0)
+                    guard ck > 0 else { continue }
+                    let key = !h.stokId.isEmpty ? h.stokId : (h.stokAdi ?? "")
+                    guard !key.isEmpty else { continue }
+                    let matchedStok = stokById[h.stokId] ?? stoklar.first(where: { $0.stokAdi == h.stokAdi })
+                    let price = h.birimFiyat > 0 ? h.birimFiyat : (matchedStok?.satisFiyati ?? 0.0)
+                    let cur = salesByProduct[key] ?? (name: h.stokAdi ?? matchedStok?.stokAdi ?? "Ürün", qty: 0.0, revenue: 0.0, category: matchedStok?.grupAdi ?? "-")
+                    salesByProduct[key] = (cur.name, cur.qty + ck, cur.revenue + (ck * price), cur.category)
+                }
+            }
+            
+            let sortedSales = salesByProduct.values.sorted {
+                if $0.qty != $1.qty { return $0.qty > $1.qty }
+                return $0.revenue > $1.revenue
             }.prefix(50)
-            for (idx, s) in sorted.enumerated() {
-                rows.append(["\(idx + 1)", s.stokAdi, String(format: "%.2f", s.mevcutMiktar), formatCurrency(s.satisFiyati), s.grupAdi ?? "-"])
+            
+            if !sortedSales.isEmpty {
+                for (idx, item) in sortedSales.enumerated() {
+                    rows.append(["\(idx + 1)", item.name, String(format: "%.2f", item.qty), formatCurrency(item.revenue), item.category])
+                }
+            } else {
+                for (idx, s) in stoklar.prefix(50).enumerated() {
+                    rows.append(["\(idx + 1)", s.stokAdi, "0.00", formatCurrency(s.satisFiyati), s.grupAdi ?? "-"])
+                }
             }
             
         case "Gelir Tablosu":
@@ -588,9 +624,29 @@ public final class ReportCalculationService {
             }
             
         case "Banka Hareketleri":
-            headers = ["Banka Adı", "Hesap No", "Güncel Bakiye", "Döviz"]
-            for b in bankalar {
-                rows.append([b.bankaAdi, b.hesapNo ?? b.iban ?? "-", formatCurrency(b.bakiye), b.dovizTuru ?? "TL"])
+            let bankaHareketler: [BankaHareket] = (try? await SupabaseService.shared.fetch(from: "banka_hareketler")) ?? []
+            let filteredBH = bankaHareketler.filter { isDateInRange($0.tarih, startDay: startDay, endDay: endDay, isAll: isAll) }
+                .sorted { $0.tarih > $1.tarih }
+                .prefix(500)
+            if !filteredBH.isEmpty {
+                headers = ["Tarih", "Banka", "Cari / Açıklama", "İşlem", "Giren", "Çıkan"]
+                for bh in filteredBH {
+                    let bAdi = bh.bankaAdi ?? bankalar.first(where: { String($0.id ?? 0) == bh.bankaId })?.bankaAdi ?? "Banka"
+                    let isIn = bh.girisCikis != "CIKIS"
+                    rows.append([
+                        formatDisplayDate(bh.tarih),
+                        bAdi,
+                        bh.cariUnvan ?? bh.aciklama ?? "-",
+                        bh.islemTuru,
+                        formatCurrency(isIn ? bh.tutar : 0.0),
+                        formatCurrency(!isIn ? bh.tutar : 0.0)
+                    ])
+                }
+            } else {
+                headers = ["Banka Adı", "Hesap No", "Güncel Bakiye", "Döviz"]
+                for b in bankalar {
+                    rows.append([b.bankaAdi, b.hesapNo ?? b.iban ?? "-", formatCurrency(b.bakiye), b.dovizTuru ?? "TL"])
+                }
             }
             
         case "Kapsamlı Gider Raporu":
@@ -789,7 +845,11 @@ public final class ReportCalculationService {
             headers = ["Müşteri", "Cari Bakiyesi", "Ort. Gecikme Günü", "Fatura / Evrak No", "Fatura Bakiyesi", "Gecikme (Gün)"]
             let today = Calendar.current.startOfDay(for: Date())
             for c in cariler where c.bakiye > 0 {
-                let cFaturalar = faturalar.filter { ($0.cariId == c.id || $0.cariUnvan == c.unvan) && ($0.faturaTuru.localizedCaseInsensitiveContains("satış") || $0.faturaTuru.localizedCaseInsensitiveContains("satis")) }
+                let cFaturalar = faturalar.filter {
+                    !$0.isKapaliOrPaid &&
+                    ($0.cariId == c.id || $0.cariUnvan == c.unvan) &&
+                    ($0.faturaTuru.localizedCaseInsensitiveContains("satış") || $0.faturaTuru.localizedCaseInsensitiveContains("satis"))
+                }
                 var overdueList: [(evrak: String, tutar: Double, gun: Int)] = []
                 for f in cFaturalar {
                     let vStr = f.vadeTarihi ?? f.tarih
@@ -898,10 +958,24 @@ public final class ReportCalculationService {
             
         case "Tahsilat Süresi (DSO)":
             headers = ["Müşteri", "Ortalama Tahsilat Süresi (Gün)", "Toplam Alacak", "Durum"]
-            for c in cariler where c.bakiye > 0 {
-                let avgDays = c.vadeGunu ?? 30
+            let satisFaturalari = faturalar.filter {
+                $0.faturaTuru.localizedCaseInsensitiveContains("satış") || $0.faturaTuru.localizedCaseInsensitiveContains("satis")
+            }
+            for c in cariler where c.signedBakiye > 0 {
+                let receivable = c.signedBakiye
+                let custSales = satisFaturalari
+                    .filter { $0.cariId == c.id || $0.cariUnvan == c.unvan }
+                    .reduce(0.0) { $0 + $1.genelToplam }
+                let avgDays: Int
+                if custSales > 0 {
+                    // Standard DSO formula: (Accounts Receivable / Total Credit Sales) * 365
+                    let computedDso = Int(round((receivable / custSales) * 365.0))
+                    avgDays = max(1, min(365, computedDso))
+                } else {
+                    avgDays = c.vadeGunu ?? 30
+                }
                 let status = avgDays > 60 ? "Riskli" : (avgDays > 30 ? "Normal" : "İyi")
-                rows.append([c.unvan, "\(avgDays)", formatCurrency(c.bakiye), status])
+                rows.append([c.unvan, "\(avgDays)", formatCurrency(receivable), status])
             }
             
         default:

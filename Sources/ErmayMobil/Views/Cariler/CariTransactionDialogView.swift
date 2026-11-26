@@ -517,11 +517,15 @@ public struct CariTransactionDialogView: View {
         let borcTutar: Double = (isOdeme || !isAlacak && !isTahsilat) ? amount : 0.0
         let alacakTutar: Double = (isTahsilat || isAlacak) ? amount : 0.0
         
-        var prefix = "DKT"
-        if isTahsilat { prefix = "THS" }
-        else if isOdeme { prefix = "TED" }
+        var prefix = "MB-DKT"
+        if method.localizedCaseInsensitiveContains("kredi") { prefix = "MB-KK" }
+        else if method.localizedCaseInsensitiveContains("eft") || method.localizedCaseInsensitiveContains("havale") { prefix = "MB-EFT" }
+        else if method.localizedCaseInsensitiveContains("çek") || method.localizedCaseInsensitiveContains("cek") { prefix = "MB-CK" }
+        else if isTahsilat { prefix = "MB-THS" }
+        else if isOdeme { prefix = "MB-TED" }
         
-        let docNo = dekontOnayNo.isEmpty ? "\(prefix)-\(Int.random(in: 1000...9999))" : dekontOnayNo
+        let rawInputDoc = dekontOnayNo.trimmingCharacters(in: .whitespacesAndNewlines)
+        let docNo = rawInputDoc.isEmpty ? "\(prefix)-\(Int.random(in: 1000...9999))" : (rawInputDoc.hasPrefix("MB-") ? rawInputDoc : "MB-\(rawInputDoc)")
         let desc = aciklama.isEmpty ? "\(transactionType) (\(method)) - \(selectedKasaBanka)" : "\(aciklama) (\(method))"
         
         let hareket = CariHareket(
@@ -536,130 +540,44 @@ public struct CariTransactionDialogView: View {
             bakiye: 0.0
         )
         
-        // Cari bakiyesini güncelle (CRIT-IOS-01: Her zaman İŞARETLİ / SIGNED bakiye tutulur)
-        var updated = initialCari
-        let oldNet = initialCari.signedBakiye
-        // Borç artışı borç bakiyesini artırır; Alacak artışı borç bakiyesini azaltır
-        let newNet = oldNet + (borcTutar - alacakTutar)
-        updated.bakiye = newNet
-        updated.bakiyeTuru = newNet >= 0 ? "B" : "A"
-        let activeFiscalYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
-        let isDekontOrCek = isDekont ||
-                            method.localizedCaseInsensitiveContains("dekont") ||
-                            method.localizedCaseInsensitiveContains("çek") ||
-                            method.localizedCaseInsensitiveContains("cek")
+        let isBank = method == "Havale / EFT" || method == "Kredi Kartı"
+        let isCash = method == "Nakit"
+        let selectedAccountObj: KasaBanka?
+        if isBank, let bId = selectedBankaId {
+            let bName = bankalar.first(where: { $0.id == bId })?.name ?? selectedKasaBanka
+            selectedAccountObj = KasaBanka(id: bId, hesapAdi: bName, hesapTuru: "BANKA")
+        } else if isCash, let kId = selectedKasaId {
+            let kName = kasalar.first(where: { $0.id == kId })?.name ?? selectedKasaBanka
+            selectedAccountObj = KasaBanka(id: kId, hesapAdi: kName, hesapTuru: "KASA")
+        } else {
+            selectedAccountObj = nil
+        }
+        
+        let finReq = FinancialTransactionRequest(
+            cari: initialCari,
+            transactionType: transactionType,
+            method: method,
+            amount: amount,
+            date: dateStr,
+            description: desc,
+            selectedHesap: selectedAccountObj,
+            isAcilisFisi: isAcilisFisi,
+            documentNo: docNo,
+            forwardedSupplierName: yonlendirilenTedarikci
+        )
         
         Task {
-            // 1. Cari Hareket ve Finansal Payloadları Hazırla (do-catch dışarısında tanımlanır)
-            var hareketPayload: [String: Any] = [
-                "uuid": UUID().uuidString,
-                "tenant_id": SupabaseService.shared.tenantId,
-                "mali_yil": activeFiscalYearInt,
-                "cari_unvan": initialCari.unvan,
-                "evrak_no": docNo,
-                "islem_turu": isTahsilat ? "Tahsilat" : (isOdeme ? "Ödeme" : "Dekont"),
-                "hareket_turu": isTahsilat ? "Tahsilat" : (isOdeme ? "Ödeme" : "Dekont"),
-                "odeme_sekli": method,
-                "aciklama": desc,
-                "borc": borcTutar,
-                "alacak": alacakTutar,
-                "bakiye": updated.bakiye,
-                "tarih": dateStr,
-                "is_deleted": false
-            ]
-            if let intCariId = Int(initialCari.id) {
-                hareketPayload["cari_id"] = intCariId
-            }
-            if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
-                hareketPayload["cari_uuid"] = cUuid
-            }
-
-            var bankaPayloadForBundle: [String: Any]? = nil
-            var kasaPayloadForBundle: [String: Any]? = nil
-            // Dekont, Çek ve Açılış fişlerinde kasa/banka hareketi oluşturulmaz
-            if !isAcilisFisi && !isDekontOrCek {
-                if method.localizedCaseInsensitiveContains("banka") || method.localizedCaseInsensitiveContains("havale") || method.localizedCaseInsensitiveContains("eft") || method == "Kredi Kartı" {
-                    var bankaPayload: [String: Any] = [
-                        "uuid": UUID().uuidString,
-                        "tenant_id": SupabaseService.shared.tenantId,
-                        "mali_yil": activeFiscalYearInt,
-                        "cari_unvan": initialCari.unvan,
-                        "evrak_no": docNo,
-                        "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                        "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                        "giren": isTahsilat ? amount : 0.0,
-                        "cikan": isOdeme ? amount : 0.0,
-                        "yatan": isTahsilat ? amount : 0.0,
-                        "ceken": isOdeme ? amount : 0.0,
-                        "tutar": amount,
-                        "aciklama": desc,
-                        "tarih": dateStr,
-                        "is_deleted": false
-                    ]
-                    if let bIdStr = selectedBankaId, let intBId = Int(bIdStr) {
-                        bankaPayload["banka_id"] = intBId
-                    }
-                    if let intCariId = Int(initialCari.id) {
-                        bankaPayload["cari_id"] = intCariId
-                    }
-                    if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
-                        bankaPayload["cari_uuid"] = cUuid
-                    }
-                    bankaPayloadForBundle = bankaPayload
-                } else if method == "Nakit" {
-                    var kasaPayload: [String: Any] = [
-                        "uuid": UUID().uuidString,
-                        "tenant_id": SupabaseService.shared.tenantId,
-                        "mali_yil": activeFiscalYearInt,
-                        "cari_unvan": initialCari.unvan,
-                        "evrak_no": docNo,
-                        "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                        "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                        "giren": isTahsilat ? amount : 0.0,
-                        "cikan": isOdeme ? amount : 0.0,
-                        "gelir": isTahsilat ? amount : 0.0,
-                        "gider": isOdeme ? amount : 0.0,
-                        "tutar": amount,
-                        "aciklama": desc,
-                        "tarih": dateStr,
-                        "is_deleted": false
-                    ]
-                    if let kIdStr = selectedKasaId, let intKId = Int(kIdStr) {
-                        kasaPayload["kasa_id"] = intKId
-                    }
-                    if let intCariId = Int(initialCari.id) {
-                        kasaPayload["cari_id"] = intCariId
-                    }
-                    if let cUuid = initialCari.syncGuid, !cUuid.isEmpty {
-                        kasaPayload["cari_uuid"] = cUuid
-                    }
-                    kasaPayloadForBundle = kasaPayload
-                }
-            }
-
             do {
-                let hData = try JSONSerialization.data(withJSONObject: hareketPayload)
-                try await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: hData)
-                
-                // 2. Carinin yeni bakiyesini Supabase'de güncelle
-                if let intCariId = Int(initialCari.id) {
-                    let bakiyePayload: [String: Any] = [
-                        "bakiye": updated.bakiye,
-                        "bakiye_turu": updated.bakiyeTuru ?? "B"
-                    ]
-                    let bData = try JSONSerialization.data(withJSONObject: bakiyePayload)
-                    try await SupabaseService.shared.updateRaw(table: "cariler", id: "\(intCariId)", data: bData)
+                _ = try await TransactionService.shared.saveFinancialTransaction(req: finReq)
+                let refreshedCari = await MainActor.run {
+                    DataStore.shared.cariler.first(where: { $0.id == initialCari.id })
                 }
-                
-                // 3. Kasa veya Banka hareketini kaydet
-                if let bankaPayload = bankaPayloadForBundle {
-                    let bpData = try JSONSerialization.data(withJSONObject: bankaPayload)
-                    try await SupabaseService.shared.insertRaw(into: "banka_hareketler", data: bpData)
-                } else if let kasaPayload = kasaPayloadForBundle {
-                    let kpData = try JSONSerialization.data(withJSONObject: kasaPayload)
-                    try await SupabaseService.shared.insertRaw(into: "kasa_hareketler", data: kpData)
+                var updated = refreshedCari ?? initialCari
+                if refreshedCari == nil {
+                    let newNet = initialCari.signedBakiye + (borcTutar - alacakTutar)
+                    updated.bakiye = newNet
+                    updated.bakiyeTuru = newNet >= 0 ? "B" : "A"
                 }
-                
                 await MainActor.run {
                     HardwareService.shared.hapticSuccess()
                     onSave?(hareket, updated)
@@ -668,6 +586,7 @@ public struct CariTransactionDialogView: View {
                 }
             } catch {
                 await MainActor.run {
+                    self.errorMessage = error.localizedDescription
                     NotificationCenter.default.post(
                         name: .userToastNotification,
                         object: nil,

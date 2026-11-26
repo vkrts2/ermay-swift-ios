@@ -12,6 +12,8 @@ public struct BankaKart: Identifiable, Codable, Sendable {
     public var yetkili: String?
     public var telefon: String?
     public var bakiye: Double
+    public var acilisBakiye: Double?
+    public var tenantId: String?
     
     public init(
         id: Int? = nil,
@@ -24,7 +26,9 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         dovizTuru: String? = "TL",
         yetkili: String? = nil,
         telefon: String? = nil,
-        bakiye: Double = 0.0
+        bakiye: Double = 0.0,
+        acilisBakiye: Double? = nil,
+        tenantId: String? = nil
     ) {
         self.id = id
         self.uuid = uuid
@@ -37,6 +41,8 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         self.yetkili = yetkili
         self.telefon = telefon
         self.bakiye = bakiye
+        self.acilisBakiye = acilisBakiye ?? bakiye
+        self.tenantId = tenantId
     }
 
     public init(
@@ -49,10 +55,12 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         dovizTuru: String? = "TL",
         yetkili: String? = nil,
         telefon: String? = nil,
-        bakiye: Double = 0.0
+        bakiye: Double = 0.0,
+        acilisBakiye: Double? = nil,
+        tenantId: String? = nil
     ) {
         self.id = Int(id)
-        self.uuid = Int(id) == nil ? id : UUID().uuidString
+        self.uuid = (Int(id) == nil && !id.isEmpty) ? id : UUID().uuidString
         self.bankaAdi = bankaAdi
         self.subeAdi = subeAdi
         self.subeKodu = subeKodu
@@ -62,6 +70,8 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         self.yetkili = yetkili
         self.telefon = telefon
         self.bakiye = bakiye
+        self.acilisBakiye = acilisBakiye ?? bakiye
+        self.tenantId = tenantId
     }
     
     enum CodingKeys: String, CodingKey {
@@ -78,6 +88,9 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         case telefon
         case bakiye
         case guncelBakiye = "guncel_bakiye"
+        case acilisBakiye = "acilis_bakiye"
+        case acilisBakiyesi = "acilis_bakiyesi"
+        case tenantId = "tenant_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -98,13 +111,18 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         self.dovizTuru = (try? c.decode(String.self, forKey: .dovizTuru)) ?? (try? c.decode(String.self, forKey: .paraBirimi)) ?? "TL"
         self.yetkili = try? c.decode(String.self, forKey: .yetkili)
         self.telefon = try? c.decode(String.self, forKey: .telefon)
+        let decodedAcilis = (try? c.decode(Double.self, forKey: .acilisBakiye)) ?? (try? c.decode(Double.self, forKey: .acilisBakiyesi))
+        self.acilisBakiye = decodedAcilis
         if let b = try? c.decode(Double.self, forKey: .bakiye), b != 0 {
             self.bakiye = b
         } else if let gb = try? c.decode(Double.self, forKey: .guncelBakiye) {
             self.bakiye = gb
+        } else if let ab = decodedAcilis {
+            self.bakiye = ab
         } else {
             self.bakiye = (try? c.decode(Double.self, forKey: .bakiye)) ?? 0.0
         }
+        self.tenantId = try? c.decode(String.self, forKey: .tenantId)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -112,7 +130,7 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         if let intId = self.id, intId > 0 {
             try c.encode(intId, forKey: .id)
         }
-        try c.encode(uuid, forKey: .uuid)
+        try c.encode(uuid.isEmpty ? UUID().uuidString : uuid, forKey: .uuid)
         try c.encode(bankaAdi, forKey: .bankaAdi)
         try c.encodeIfPresent(subeAdi, forKey: .subeAdi)
         try c.encodeIfPresent(subeKodu, forKey: .subeKodu)
@@ -124,6 +142,10 @@ public struct BankaKart: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(telefon, forKey: .telefon)
         try c.encode(bakiye, forKey: .bakiye)
         try c.encode(bakiye, forKey: .guncelBakiye)
+        let resolvedAcilis = acilisBakiye ?? bakiye
+        try c.encode(resolvedAcilis, forKey: .acilisBakiye)
+        try c.encode(resolvedAcilis, forKey: .acilisBakiyesi)
+        try c.encode(tenantId ?? SupabaseService.shared.currentTenantId, forKey: .tenantId)
     }
 }
 

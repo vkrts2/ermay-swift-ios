@@ -4,11 +4,14 @@ import UIKit
 #endif
 
 public struct FaturaDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     public let fatura: Fatura
     @State private var liveKalemler: [FaturaKalem] = []
     @State private var isLoadingKalemler: Bool = false
     @State private var pdfPreviewItem: PDFPreviewItem? = nil
     @State private var isGeneratingPDF: Bool = false
+    @State private var showDeleteConfirm: Bool = false
+    @State private var isDeleting: Bool = false
     
     public init(fatura: Fatura) {
         self.fatura = fatura
@@ -179,6 +182,16 @@ public struct FaturaDetailView: View {
                     .padding(.horizontal)
                     .disabled(isGeneratingPDF)
                     
+                    ActionButton(
+                        title: isDeleting ? "Fatura İptal Ediliyor..." : "Faturayı İptal Et / Sil",
+                        icon: "trash.fill",
+                        color: AppTheme.danger
+                    ) {
+                        showDeleteConfirm = true
+                    }
+                    .padding(.horizontal)
+                    .disabled(isDeleting)
+                    
                     Spacer().frame(height: 20)
                 }
                 .padding(.top, 12)
@@ -187,6 +200,14 @@ public struct FaturaDetailView: View {
         .navigationTitle("Fatura Detayı")
         .navigationBarTitleDisplayMode(.inline)
         .enableSwipeBack()
+        .alert("Faturayı İptal Et / Sil", isPresented: $showDeleteConfirm) {
+            Button("Evet, Faturayı Sil", role: .destructive) {
+                cancelAndDeleteFatura()
+            }
+            Button("Vazgeç", role: .cancel) {}
+        } message: {
+            Text("\(fatura.faturaNo) numaralı faturayı ve bağlı cari/stok/kasa hareketlerini iptal etmek istediğinize emin misiniz?")
+        }
         .task {
             await loadKalemler()
         }
@@ -221,6 +242,29 @@ public struct FaturaDetailView: View {
             print("Kalemler load error: \(error)")
         }
         isLoadingKalemler = false
+    }
+    
+    private func cancelAndDeleteFatura() {
+        isDeleting = true
+        Task {
+            do {
+                try await TransactionService.shared.deleteInvoiceAtomic(fatura: fatura)
+                await MainActor.run {
+                    HardwareService.shared.hapticSuccess()
+                    isDeleting = false
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isDeleting = false
+                    NotificationCenter.default.post(
+                        name: .userToastNotification,
+                        object: nil,
+                        userInfo: ["message": "Fatura silinemedi: \(error.localizedDescription)"]
+                    )
+                }
+            }
+        }
     }
 }
 

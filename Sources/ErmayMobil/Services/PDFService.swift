@@ -1,4 +1,5 @@
 import Foundation
+import KeychainAccess
 #if canImport(UIKit)
 import UIKit
 import PDFKit
@@ -9,14 +10,49 @@ public final class PDFService {
     public var cloudPdfUrl: String = ""
     public var cloudPdfApiKey: String? = nil
     private var cachedFirmaProfili: FirmaProfili? = nil
+    private let keychain = Keychain(service: "com.ermay.muhasebe").accessibility(.whenUnlockedThisDeviceOnly)
+    private let keychainPdfKey = "cloud_pdf_api_key"
     
     private init() {
-        if let savedUrl = UserDefaults.standard.string(forKey: "cloud_pdf_api_url"), !savedUrl.isEmpty {
-            self.cloudPdfUrl = savedUrl
+        if let savedUrl = UserDefaults.standard.string(forKey: "cloud_pdf_api_url")?.trimmingCharacters(in: .whitespacesAndNewlines), !savedUrl.isEmpty {
+            self.cloudPdfUrl = savedUrl.hasSuffix("/") ? String(savedUrl.dropLast()) : savedUrl
         }
-        if let savedKey = UserDefaults.standard.string(forKey: "cloud_pdf_api_key"), !savedKey.isEmpty {
-            self.cloudPdfApiKey = savedKey
+        if let secureKey = try? keychain.getString(keychainPdfKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !secureKey.isEmpty {
+            self.cloudPdfApiKey = secureKey
+        } else if let legacyKey = UserDefaults.standard.string(forKey: "cloud_pdf_api_key")?.trimmingCharacters(in: .whitespacesAndNewlines), !legacyKey.isEmpty {
+            self.cloudPdfApiKey = legacyKey
+            try? keychain.set(legacyKey, key: keychainPdfKey)
+            UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_key")
         }
+    }
+    
+    public func updateCloudPdfConfiguration(url: String, apiKey: String? = nil) {
+        let cleanUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.cloudPdfUrl = cleanUrl.hasSuffix("/") ? String(cleanUrl.dropLast()) : cleanUrl
+        if self.cloudPdfUrl.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_url")
+        } else {
+            UserDefaults.standard.set(self.cloudPdfUrl, forKey: "cloud_pdf_api_url")
+        }
+        if let key = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if key.isEmpty {
+                self.cloudPdfApiKey = nil
+                try? keychain.remove(keychainPdfKey)
+            } else {
+                self.cloudPdfApiKey = key
+                try? keychain.set(key, key: keychainPdfKey)
+            }
+            UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_key")
+        }
+    }
+    
+    public func clearCredentials() {
+        self.cloudPdfUrl = ""
+        self.cloudPdfApiKey = nil
+        self.cachedFirmaProfili = nil
+        UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_url")
+        UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_key")
+        try? keychain.remove(keychainPdfKey)
     }
     
     public func resolveFirmaProfili(fallback: FirmaProfili = FirmaProfili.varsayilan) async -> FirmaProfili {
@@ -32,8 +68,10 @@ public final class PDFService {
                 UserDefaults.standard.set(self.cloudPdfUrl, forKey: "cloud_pdf_api_url")
             }
             if let apiKey = p.cloudPdfApiKey, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.cloudPdfApiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                UserDefaults.standard.set(self.cloudPdfApiKey, forKey: "cloud_pdf_api_key")
+                let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.cloudPdfApiKey = cleanKey
+                try? keychain.set(cleanKey, key: keychainPdfKey)
+                UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_key")
             }
             if let b64 = p.logoData, !b64.isEmpty {
                 UserDefaults.standard.set(b64, forKey: "company_logo_base64")
@@ -757,7 +795,7 @@ public final class PDFService {
             return nil
         }
         
-        let resolvedApiKey = cloudPdfApiKey ?? UserDefaults.standard.string(forKey: "cloud_pdf_api_key") ?? ProcessInfo.processInfo.environment["PDF_API_KEY"]
+        let resolvedApiKey = cloudPdfApiKey ?? (try? keychain.getString(keychainPdfKey)) ?? ProcessInfo.processInfo.environment["PDF_API_KEY"]
         
         for attempt in 1...2 {
             var request = URLRequest(url: url)

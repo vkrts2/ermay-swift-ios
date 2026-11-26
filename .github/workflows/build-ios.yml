@@ -78,15 +78,3 @@ jobs:
             build/VK.ipa
           retention-days: 14
 
-      - name: Create GitHub Release with IPA
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: Ermay Mobil iOS v1.0.${{ github.run_number }}
-          files: |
-            build/ErmayMobil.ipa
-            build/VK.ipa
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

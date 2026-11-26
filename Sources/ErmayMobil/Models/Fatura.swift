@@ -32,6 +32,17 @@ public struct Fatura: Identifiable, Codable, Hashable {
         set { odemeDurumu = newValue }
     }
     
+    public var isKapali: Bool {
+        let d = durum.trimmingCharacters(in: .whitespacesAndNewlines)
+        let u = d.uppercased(with: Locale(identifier: "tr_TR"))
+        let l = d.lowercased(with: Locale(identifier: "tr_TR"))
+        return u == "ODENDI" || u == "ÖDENDİ" || u == "KAPALI" || l == "kapalı" || l == "kapali" || l == "ödendi" || l == "odendi"
+    }
+    
+    public var isKapaliOrPaid: Bool {
+        isKapali
+    }
+    
     enum CodingKeys: String, CodingKey {
         case id
         case faturaNo = "fatura_no"

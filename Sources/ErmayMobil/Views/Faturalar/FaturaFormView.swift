@@ -5,7 +5,7 @@ public struct FaturaFormView: View {
     public var onSave: ((Fatura) -> Void)?
     
     // Fatura Başlık Bilgileri
-    @State private var faturaNo: String = "FTR-\(SupabaseService.shared.activeFiscalYear)-\(Int.random(in: 10000...99999))"
+    @State private var faturaNo: String = "MB-FTR-\(SupabaseService.shared.activeFiscalYear)-\(Int.random(in: 10000...99999))"
     @State private var tur: String = "Satış" // "Satış" | "Alış"
     @State private var durum: String = "Açık" // "Açık" | "Kapalı"
     @State private var odemeSekli: String = "Açık Hesap" // "Açık Hesap" | "Nakit" | "Kredi Kartı" | "Havale / EFT"
@@ -647,6 +647,7 @@ public struct FaturaFormView: View {
                 }
             } catch {
                 await MainActor.run {
+                    self.errorMessage = error.localizedDescription
                     NotificationCenter.default.post(
                         name: .userToastNotification,
                         object: nil,

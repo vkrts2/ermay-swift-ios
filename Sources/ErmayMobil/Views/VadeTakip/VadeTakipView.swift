@@ -3,6 +3,7 @@ import SwiftUI
 public struct VadeTakipView: View {
     @State private var selectedDate: Date = Date()
     @State private var selectedTimeFilter: String = "Tümü"
+    @State private var isCalendarDateSelected: Bool = false
     
     // Veriler
     @State private var vadeListesi: [VadeItem] = []
@@ -24,6 +25,12 @@ public struct VadeTakipView: View {
         let weekEnd = cal.date(byAdding: .day, value: 7, to: todayStart) ?? todayStart
         return vadeListesi.filter { item in
             let parsedDate = AppFormatters.parseDate(String(item.vadeTarihi.prefix(10))) ?? AppFormatters.parseDate(item.vadeTarihi)
+            if isCalendarDateSelected {
+                if let d = parsedDate {
+                    return cal.isDate(d, inSameDayAs: selectedDate)
+                }
+                return item.vadeTarihi == AppFormatters.shortDate.string(from: selectedDate) || item.vadeTarihi == AppFormatters.isoDate.string(from: selectedDate)
+            }
             switch selectedTimeFilter {
             case "Gecikenler":
                 return item.gecikmeGun > 0
@@ -82,13 +89,18 @@ public struct VadeTakipView: View {
                                 markedDates: markedVadeDates
                             )
                             .padding(.horizontal)
+                            .onChange(of: selectedDate) { _ in
+                                isCalendarDateSelected = true
+                                selectedTimeFilter = "Seçili Gün"
+                            }
                             
                             // Zaman Filtreleri
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(timeFilters, id: \.self) { filter in
-                                        let isSelected = selectedTimeFilter == filter
+                                        let isSelected = !isCalendarDateSelected && selectedTimeFilter == filter
                                         Button {
+                                            isCalendarDateSelected = false
                                             selectedTimeFilter = filter
                                         } label: {
                                             Text(filter)
@@ -218,8 +230,8 @@ public struct VadeTakipView: View {
             var items: [VadeItem] = []
             let now = Date()
             
-            // Faturalardan vadeler
-            for f in faturalar {
+            // Faturalardan vadeler (Kapalı / Ödenmiş faturalar hariç tutulur)
+            for f in faturalar where !f.isKapaliOrPaid {
                 let vStr = f.vadeTarihi ?? f.tarih
                 let foldedTur = f.faturaTuru.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "tr_TR"))
                 let isSatis = foldedTur.contains("satis")

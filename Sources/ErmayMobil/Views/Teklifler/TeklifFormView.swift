@@ -36,9 +36,12 @@ public struct TeklifFormView: View {
     @Environment(\.dismiss) private var dismiss
     public var onSave: ((Teklif) -> Void)?
     
-    @State private var teklifNo: String = "TKF-\(Int.random(in: 100000...999999))"
+    @State private var teklifNo: String = "MB-TKL-\(Int.random(in: 100000...999999))"
     @State private var durum: String = "Bekliyor"
+    @State private var oncelik: String = "Orta"
     @State private var odemeBilgisi: String = ""
+    @State private var baglantiEvrakNo: String = ""
+    @State private var pdfNotlar: String = ""
     @State private var tarihStr: String = ""
     @State private var gecerlilikTarihiStr: String = ""
     @State private var aciklama: String = ""
@@ -57,6 +60,15 @@ public struct TeklifFormView: View {
     @State private var errorMessage: String? = nil
     
     private let birimler = ["Adet", "Kg", "Mt", "M2"]
+    
+    private var decimalNumberFormatter: NumberFormatter {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.allowsFloats = true
+        f.minimumFractionDigits = 0
+        f.maximumFractionDigits = 4
+        return f
+    }
     
     public init(onSave: ((Teklif) -> Void)? = nil) {
         self.onSave = onSave
@@ -89,8 +101,9 @@ public struct TeklifFormView: View {
                         
                         cariCardSection
                         teklifNoAndDurumSection
+                        oncelikAndOdemeSection
                         datesSection
-                        odemeSection
+                        docsSection
                         kalemlerSection
                         aciklamaSection
                         summarySection
@@ -266,17 +279,74 @@ public struct TeklifFormView: View {
     }
     
     @ViewBuilder
-    private var odemeSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("ÖDEME BİLGİSİ")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(Color(hex: "94A3B8"))
-            TextField("örn. 30 Gün Vade veya Peşin Ödeme...", text: $odemeBilgisi)
-                .padding(12)
-                .background(Color(hex: "121216"))
-                .cornerRadius(10)
-                .foregroundColor(.white)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.08), lineWidth: 1))
+    private var oncelikAndOdemeSection: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ÖNCELİK")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Color(hex: "94A3B8"))
+                HStack(spacing: 4) {
+                    ForEach(["Düşük", "Orta", "Yüksek"], id: \.self) { p in
+                        Button {
+                            oncelik = p
+                        } label: {
+                            Text(p)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(oncelik == p ? .white : Color(hex: "94A3B8"))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 42)
+                                .background(oncelik == p ? Color(hex: "0061FF") : Color.white.opacity(0.04))
+                                .cornerRadius(8)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ÖDEME BİLGİSİ")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Color(hex: "94A3B8"))
+                TextField("Peşin, Vade vb.", text: $odemeBilgisi)
+                    .padding(12)
+                    .background(Color(hex: "121216"))
+                    .cornerRadius(10)
+                    .foregroundColor(.white)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal)
+    }
+    
+    @ViewBuilder
+    private var docsSection: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("BAĞLANTI EVRAK NO")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Color(hex: "94A3B8"))
+                TextField("Referans No vb.", text: $baglantiEvrakNo)
+                    .padding(12)
+                    .background(Color(hex: "121216"))
+                    .cornerRadius(10)
+                    .foregroundColor(.white)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            }
+            .frame(maxWidth: .infinity)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("PDF ÖZEL NOTLAR")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Color(hex: "94A3B8"))
+                TextField("Belgede çıkacak not...", text: $pdfNotlar)
+                    .padding(12)
+                    .background(Color(hex: "121216"))
+                    .cornerRadius(10)
+                    .foregroundColor(.white)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            }
+            .frame(maxWidth: .infinity)
         }
         .padding(.horizontal)
     }
@@ -370,7 +440,7 @@ public struct TeklifFormView: View {
                     TextField("Miktar", value: Binding(
                         get: { kalemler[index].miktar },
                         set: { kalemler[index].miktar = $0 }
-                    ), formatter: NumberFormatter())
+                    ), formatter: decimalNumberFormatter)
                     .keyboardType(.decimalPad)
                     .font(.system(size: 12, weight: .bold))
                     .padding(.horizontal, 6)
@@ -408,7 +478,7 @@ public struct TeklifFormView: View {
                 TextField("Fiyat", value: Binding(
                     get: { kalemler[index].birimFiyat },
                     set: { kalemler[index].birimFiyat = $0 }
-                ), formatter: NumberFormatter())
+                ), formatter: decimalNumberFormatter)
                 .keyboardType(.decimalPad)
                 .font(.system(size: 12, weight: .bold))
                 .padding(.horizontal, 8)
@@ -575,11 +645,12 @@ public struct TeklifFormView: View {
         let tenantId = SupabaseService.shared.tenantId
         let cIdInt = cariId != nil ? Int(cariId!) : nil
         let activeYearInt = Int(SupabaseService.shared.activeFiscalYear) ?? Calendar.current.component(.year, from: Date())
+        let finalTeklifNo = teklifNo.hasPrefix("MB-") ? teklifNo : "MB-\(teklifNo)"
 
         let newTeklif = Teklif(
             id: teklifUuid,
-            teklifNo: teklifNo,
-            cariId: cariId ?? "",
+            teklifNo: finalTeklifNo,
+            cariId: cIdInt != nil ? cariId : nil,
             cariUnvan: cariUnvan,
             tarih: tarihStr,
             gecerlilikTarihi: gecerlilikTarihiStr,
@@ -596,10 +667,14 @@ public struct TeklifFormView: View {
         var rpcPayload: [String: Any] = [
             "uuid": teklifUuid,
             "tenant_id": tenantId,
-            "teklif_no": teklifNo,
+            "teklif_no": finalTeklifNo,
             "cari_unvan": cariUnvan,
             "tarih": tarihStr,
             "gecerlilik_tarihi": gecerlilikTarihiStr,
+            "oncelik": oncelik,
+            "odeme_bilgisi": odemeBilgisi,
+            "baglanti_evrak_no": baglantiEvrakNo,
+            "pdf_notlar": pdfNotlar,
             "ara_toplam": araToplam,
             "kdv_toplam": kdvToplami,
             "genel_toplam": genelToplam,

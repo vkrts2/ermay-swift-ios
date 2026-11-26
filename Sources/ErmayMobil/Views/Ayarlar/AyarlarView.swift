@@ -23,6 +23,7 @@ public struct AyarlarView: View {
     @State private var dbUrl: String = SupabaseService.shared.baseUrl
     @State private var secretKey: String = SupabaseService.shared.anonKey
     @State private var pdfServerUrl: String = PDFService.shared.cloudPdfUrl
+    @State private var pdfApiKey: String = PDFService.shared.cloudPdfApiKey ?? ""
     @State private var pingStatus: String = "Bulut Aktif • Canlı Senkronizasyon"
     @State private var isTestingPing: Bool = false
     
@@ -375,7 +376,8 @@ public struct AyarlarView: View {
             }
             
             settingCard(title: "Bulut PDF Motoru (QuestPDF API)", icon: "doc.text.fill", color: Color(hex: "10B981")) {
-                inputField(label: "QuestPDF Bulut Servis URL'si", text: $pdfServerUrl, placeholder: "https://ermay-pdf-api-390930978984.europe-west1.run.app")
+                inputField(label: "QuestPDF Bulut Servis URL'si", text: $pdfServerUrl, placeholder: "https://pdf-api.ornek.com")
+                inputField(label: "QuestPDF API Anahtarı (Opsiyonel)", text: $pdfApiKey, placeholder: "X-API-Key...", isSecure: true)
                 Text("Fatura, sipariş, teklif ve ekstrelerin yüksek çözünürlüklü vektörel PDF çıktısını üretir.")
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "94A3B8"))
@@ -401,6 +403,18 @@ public struct AyarlarView: View {
             
             saveButton(title: "Bulut ve API Ayarlarını Kaydet") {
                 SupabaseService.shared.updateConfiguration(baseUrl: dbUrl, anonKey: secretKey)
+                PDFService.shared.updateCloudPdfConfiguration(url: pdfServerUrl, apiKey: pdfApiKey)
+                Task {
+                    var payload: [String: Any] = [
+                        "cloud_pdf_api_url": PDFService.shared.cloudPdfUrl
+                    ]
+                    if let key = PDFService.shared.cloudPdfApiKey, !key.isEmpty {
+                        payload["cloud_pdf_api_key"] = key
+                    }
+                    if let data = try? JSONSerialization.data(withJSONObject: payload) {
+                        try? await SupabaseService.shared.updateRaw(table: "firma_profili", id: "1", data: data)
+                    }
+                }
                 alertMessage = "Bulut ve API ayarları başarıyla kaydedildi."
                 showAlert = true
             }
@@ -548,15 +562,15 @@ public struct AyarlarView: View {
                 inputField(label: "Yeni Kilit PIN (4-6 hane)", text: $newPin, placeholder: "PIN girin...", isSecure: true)
                 
                 Button {
-                    let trimmedPin = newPin.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard trimmedPin.count >= 4 else {
-                        alertMessage = "Lütfen en az 4 haneli bir PIN kodu giriniz."
+                    let trimmedPin = newPin.trimmingCharacters(in: .whitespacesAndNewlines).filter { $0.isNumber }
+                    guard (4...6).contains(trimmedPin.count) else {
+                        alertMessage = "Lütfen 4 ile 6 hane arasında rakamlardan oluşan bir PIN kodu giriniz."
                         showAlert = true
                         return
                     }
                     lockService.setPin(trimmedPin)
                     newPin = ""
-                    alertMessage = "PIN ve oturum zaman aşımı (\(lockTimeout) dk) başarıyla güncellendi."
+                    alertMessage = "PIN (\(trimmedPin.count) hane) ve oturum zaman aşımı (\(lockTimeout) dk) başarıyla güncellendi."
                     showAlert = true
                 } label: {
                     Text(pinConfigured ? "PIN ve Süreyi Güncelle" : "PIN Tanımla ve Aktifleştir")

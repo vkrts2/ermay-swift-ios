@@ -245,9 +245,14 @@ public struct TahsilatFormView: View {
     }
     
     private func handleSave() {
-        guard let tutar = Double(tutarStr.replacingOccurrences(of: ",", with: ".")), tutar > 0 else { return }
+        let clean = tutarStr.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: ".")
+        guard let tutar = Double(clean) ?? Double(tutarStr.replacingOccurrences(of: ",", with: ".")), tutar > 0 else {
+            errorMessage = "Lütfen 0'dan büyük geçerli bir tutar giriniz."
+            return
+        }
         isSaving = true
-        let docNo = isTahsilat ? "THS-\(Int.random(in: 100...999))" : "TED-\(Int.random(in: 100...999))"
+        errorMessage = nil
+        let docNo = isTahsilat ? "MB-THS-\(Int.random(in: 1000...9999))" : "MB-TED-\(Int.random(in: 1000...9999))"
         let desc = aciklama.isEmpty ? (isTahsilat ? "Tahsilat İşlemi" : "Ödeme İşlemi") : aciklama
         let dateStr = AppFormatters.isoDate.string(from: tarih)
         
@@ -263,65 +268,25 @@ public struct TahsilatFormView: View {
             aciklama: desc
         )
         
+        let kasaName = kasalar.first(where: { $0.id == hesapId })?.name ?? "Merkez Kasa"
+        let selectedKasaObj = KasaBanka(id: hesapId, hesapAdi: kasaName, hesapTuru: "KASA")
+        let targetCari = DataStore.shared.cariler.first(where: { $0.id == cariId }) ?? CariKart(id: cariId ?? "", unvan: cariUnvan.isEmpty ? "Peşin İşlem" : cariUnvan)
+        
+        let finReq = FinancialTransactionRequest(
+            cari: targetCari,
+            transactionType: isTahsilat ? "Tahsilat" : "Ödeme",
+            method: "Nakit",
+            amount: tutar,
+            date: dateStr,
+            description: desc,
+            selectedHesap: selectedKasaObj,
+            isAcilisFisi: false,
+            documentNo: docNo
+        )
+        
         Task {
-            // 1. Kasa Hareketi Payload Hazırla (do-catch dışarısında tanımlanır)
-            var kasaPayload: [String: Any] = [
-                "uuid": UUID().uuidString,
-                "tenant_id": SupabaseService.shared.tenantId,
-                "tarih": dateStr,
-                "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                "giren": isTahsilat ? tutar : 0.0,
-                "cikan": isTahsilat ? 0.0 : tutar,
-                "gelir": isTahsilat ? tutar : 0.0,
-                "gider": isTahsilat ? 0.0 : tutar,
-                "evrak_no": docNo,
-                "tutar": tutar,
-                "aciklama": desc,
-                "is_deleted": false
-            ]
-            if let intKasaId = Int(hesapId) {
-                kasaPayload["kasa_id"] = intKasaId
-            }
-            if let cid = cariId, let intCid = Int(cid) {
-                kasaPayload["cari_id"] = intCid
-            }
-            if !cariUnvan.isEmpty {
-                kasaPayload["cari_unvan"] = cariUnvan
-            }
-
-            var cariPayloadForBundle: [String: Any]? = nil
-            if let cid = cariId, !cid.isEmpty {
-                var cariPayload: [String: Any] = [
-                    "uuid": UUID().uuidString,
-                    "tenant_id": SupabaseService.shared.tenantId,
-                    "cari_unvan": cariUnvan,
-                    "evrak_no": docNo,
-                    "islem_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                    "hareket_turu": isTahsilat ? "Tahsilat" : "Ödeme",
-                    "odeme_sekli": "Nakit",
-                    "aciklama": desc,
-                    "borc": isTahsilat ? 0.0 : tutar,
-                    "alacak": isTahsilat ? tutar : 0.0,
-                    "tarih": dateStr,
-                    "is_deleted": false
-                ]
-                if let intCid = Int(cid) {
-                    cariPayload["cari_id"] = intCid
-                }
-                cariPayloadForBundle = cariPayload
-            }
-
             do {
-                let kData = try JSONSerialization.data(withJSONObject: kasaPayload)
-                try await SupabaseService.shared.insertRaw(into: "kasa_hareketler", data: kData)
-                
-                // 2. Eğer Cari seçildiyse Cari Hareketi de ekle
-                if let cariPayload = cariPayloadForBundle {
-                    let cData = try JSONSerialization.data(withJSONObject: cariPayload)
-                    try await SupabaseService.shared.insertRaw(into: "cari_hareketler", data: cData)
-                }
-                
+                _ = try await TransactionService.shared.saveFinancialTransaction(req: finReq)
                 await MainActor.run {
                     HardwareService.shared.hapticSuccess()
                     onSave?(h)
@@ -330,6 +295,7 @@ public struct TahsilatFormView: View {
                 }
             } catch {
                 await MainActor.run {
+                    self.errorMessage = error.localizedDescription
                     NotificationCenter.default.post(
                         name: .userToastNotification,
                         object: nil,

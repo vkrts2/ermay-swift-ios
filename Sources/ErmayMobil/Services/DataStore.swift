@@ -34,7 +34,8 @@ public final class DataStore: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    await self?.loadFaturalarCacheFirst(forceCloudRefresh: true)
+                    await self?.loadAll(force: true)
+                    NotificationCenter.default.post(name: .supabaseRealtimeDataChanged, object: nil, userInfo: ["table": "mali_yil"])
                 }
             }
             .store(in: &cancellables)
@@ -49,28 +50,58 @@ public final class DataStore: ObservableObject {
             .store(in: &cancellables)
     }
 
+    public func clearMemoryCache() {
+        self.cariler = []
+        self.stoklar = []
+        self.faturalar = []
+        self.lastSyncDate = nil
+        self.syncErrorMessage = nil
+    }
+
     private func handleRealtimeTableChange(table: String?) async {
         guard SupabaseService.shared.isConfigured, AuthService.shared.isAuthenticated else { return }
         switch table {
+        case "mali_yil":
+            break
         case "cariler", "cari_hareketler":
             await loadCarilerCacheFirst(forceCloudRefresh: true)
-        case "stoklar", "stok_hareketler":
+        case "stoklar", "stok_hareketler", "stok_gruplar":
             await loadStoklarCacheFirst(forceCloudRefresh: true)
         case "faturalar", "fatura_detaylar":
             await loadFaturalarCacheFirst(forceCloudRefresh: true)
             await loadCarilerCacheFirst(forceCloudRefresh: true)
+            await loadStoklarCacheFirst(forceCloudRefresh: true)
+        case "kasalar", "bankalar", "kasa_hareketler", "banka_hareketler", "cekler", "senetler", "kredi_karti_islemler", "eft_islemler":
+            await loadCarilerCacheFirst(forceCloudRefresh: true)
+            await loadFaturalarCacheFirst(forceCloudRefresh: true)
+        case "siparisler", "siparis_detaylar", "teklifler", "teklif_detaylar":
             await loadStoklarCacheFirst(forceCloudRefresh: true)
         case nil, "":
             await syncAll()
         default:
             break
         }
+        NotificationManager.shared.refreshAccountingAlerts(stoklar: self.stoklar, faturalar: self.faturalar)
     }
 
     // MARK: - Direct PostgreSQL Cariler
     public func loadAll(force: Bool = true) async {
+        let shouldForce = force || self.cariler.isEmpty || self.stoklar.isEmpty || self.faturalar.isEmpty
+        await loadCarilerCacheFirst(forceCloudRefresh: shouldForce || true)
+        await loadStoklarCacheFirst(forceCloudRefresh: shouldForce || true)
+        await loadFaturalarCacheFirst(forceCloudRefresh: shouldForce || true)
+        NotificationManager.shared.refreshAccountingAlerts(stoklar: self.stoklar, faturalar: self.faturalar)
+    }
+
+    public func loadCariler(force: Bool = true) async {
         await loadCarilerCacheFirst(forceCloudRefresh: force)
+    }
+
+    public func loadStoklar(force: Bool = true) async {
         await loadStoklarCacheFirst(forceCloudRefresh: force)
+    }
+
+    public func loadFaturalar(force: Bool = true) async {
         await loadFaturalarCacheFirst(forceCloudRefresh: force)
     }
 
@@ -137,6 +168,7 @@ public final class DataStore: ObservableObject {
         await loadCarilerCacheFirst(forceCloudRefresh: true)
         await loadStoklarCacheFirst(forceCloudRefresh: true)
         await loadFaturalarCacheFirst(forceCloudRefresh: true)
+        NotificationManager.shared.refreshAccountingAlerts(stoklar: self.stoklar, faturalar: self.faturalar)
     }
 
     // MARK: - Direct Save Helpers (No Offline Queue; Real Error Propagation)
@@ -147,6 +179,7 @@ public final class DataStore: ObservableObject {
             try await SupabaseService.shared.insert(into: "stoklar", item: item)
         }
         await loadStoklarCacheFirst(forceCloudRefresh: true)
+        NotificationManager.shared.refreshAccountingAlerts(stoklar: self.stoklar, faturalar: self.faturalar)
     }
 
     public func saveCari(_ item: CariKart, isUpdate: Bool = false) async throws {

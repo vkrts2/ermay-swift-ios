@@ -17,9 +17,12 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
     @Published public var activeFiscalYear: String = String(Calendar.current.component(.year, from: Date()))
     @Published public var availableFiscalYears: [String] = [String(Calendar.current.component(.year, from: Date()))]
     public var authToken: String? = nil
+    public var sessionToken: String? = nil
+    public var currentTenantId: String { tenantId }
     
-    private let keychain = Keychain(service: "com.ermay.muhasebe").accessibility(.afterFirstUnlock)
+    private let keychain = Keychain(service: "com.ermay.muhasebe").accessibility(.whenUnlockedThisDeviceOnly)
     private let keychainAnonKey = "supabase_secure_anon_key"
+    private let keychainSessionTokenKey = "supabase_session_token"
     
     private let session: URLSession
     private let decoder: JSONDecoder
@@ -46,6 +49,10 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             self.anonKey = legacyKey
             try? keychain.set(legacyKey, key: keychainAnonKey)
             UserDefaults.standard.removeObject(forKey: "supabase_anon_key")
+        }
+        if let savedSessionToken = try? keychain.getString(keychainSessionTokenKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !savedSessionToken.isEmpty {
+            self.sessionToken = savedSessionToken
         }
         if let savedTenant = UserDefaults.standard.string(forKey: "supabase_tenant_id")?.trimmingCharacters(in: .whitespacesAndNewlines),
            !savedTenant.isEmpty {
@@ -222,14 +229,42 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         }
     }
 
+    public func setSessionToken(_ token: String?) {
+        let clean = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if clean.isEmpty {
+            self.sessionToken = nil
+            try? keychain.remove(keychainSessionTokenKey)
+        } else {
+            self.sessionToken = clean
+            try? keychain.set(clean, key: keychainSessionTokenKey)
+        }
+    }
+
     public func clearConfiguration() {
         UserDefaults.standard.removeObject(forKey: "supabase_base_url")
         UserDefaults.standard.removeObject(forKey: "supabase_anon_key")
+        UserDefaults.standard.removeObject(forKey: "supabase_tenant_id")
+        UserDefaults.standard.removeObject(forKey: "supabase_active_fiscal_year")
+        UserDefaults.standard.removeObject(forKey: "supabase_available_fiscal_years")
+        UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_url")
+        UserDefaults.standard.removeObject(forKey: "cloud_pdf_api_key")
+        UserDefaults.standard.removeObject(forKey: "company_logo_base64")
         try? keychain.remove(keychainAnonKey)
+        try? keychain.remove(keychainSessionTokenKey)
+        try? keychain.remove("cloud_pdf_api_key")
+        self.authToken = nil
+        self.sessionToken = nil
+        PDFService.shared.clearCredentials()
+        stopRealtimeListener()
+        let defaultYear = String(Calendar.current.component(.year, from: Date()))
         DispatchQueue.main.async {
             self.baseUrl = ""
             self.anonKey = ""
+            self.tenantId = "tenant_ermay_master"
+            self.activeFiscalYear = defaultYear
+            self.availableFiscalYears = [defaultYear]
             self.isConfigured = false
+            DataStore.shared.clearMemoryCache()
         }
     }
 
@@ -308,6 +343,9 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
             "Content-Type": "application/json",
             "X-Tenant-Id": tenantId.isEmpty ? "tenant_ermay_master" : tenantId
         ]
+        if let token = sessionToken, !token.isEmpty {
+            headers["X-App-Session"] = token
+        }
         if let prefer = prefer {
             headers["Prefer"] = prefer
         }
@@ -381,7 +419,19 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         ]
         
         // Mali yıl izolasyonu: Mali yıla tabi operasyonel tablolarda aktif mali yılı filtrele
-        let fiscalYearTables = ["faturalar", "cari_hareketler", "kasa_hareketler", "banka_hareketler", "stok_hareketler"]
+        let fiscalYearTables = [
+            "faturalar",
+            "cari_hareketler",
+            "kasa_hareketler",
+            "banka_hareketler",
+            "stok_hareketler",
+            "siparisler",
+            "teklifler",
+            "cekler",
+            "senetler",
+            "kredi_karti_islemler",
+            "eft_islemler"
+        ]
         let applyFiscalYear = fiscalYearTables.contains(table) && !filters.keys.contains("mali_yil")
         
         if applyTenantFilter && applyFiscalYear {
@@ -771,7 +821,14 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
     private var heartbeatTimer: Timer? = nil
     private var heartbeatRefCounter: Int = 100
     private var reconnectAttempt: Int = 0
-    private var realtimeDebounceWorkItem: DispatchWorkItem? = nil
+    private var realtimeDebounceWorkItems: [String: DispatchWorkItem] = [:]
+    
+    public func connectRealtime() {
+        if !isRealtimeActive || webSocketTask == nil || webSocketTask?.state != .running {
+            stopRealtimeListener()
+            startRealtimeListener()
+        }
+    }
     
     public func startRealtimeListener() {
         guard !isRealtimeActive, !baseUrl.isEmpty, !anonKey.isEmpty else { return }
@@ -818,8 +875,8 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in
             self?.heartbeatTimer?.invalidate()
             self?.heartbeatTimer = nil
-            self?.realtimeDebounceWorkItem?.cancel()
-            self?.realtimeDebounceWorkItem = nil
+            self?.realtimeDebounceWorkItems.values.forEach { $0.cancel() }
+            self?.realtimeDebounceWorkItems.removeAll()
         }
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
@@ -844,15 +901,17 @@ public final class SupabaseService: ObservableObject, @unchecked Sendable {
     private func scheduleDebouncedRealtimeBroadcast(table: String? = nil) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.realtimeDebounceWorkItem?.cancel()
-            let item = DispatchWorkItem {
+            let key = (table?.isEmpty == false) ? table! : "__all__"
+            self.realtimeDebounceWorkItems[key]?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                self?.realtimeDebounceWorkItems.removeValue(forKey: key)
                 var info: [AnyHashable: Any] = [:]
                 if let t = table, !t.isEmpty {
                     info["table"] = t
                 }
                 NotificationCenter.default.post(name: .supabaseRealtimeDataChanged, object: nil, userInfo: info)
             }
-            self.realtimeDebounceWorkItem = item
+            self.realtimeDebounceWorkItems[key] = item
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
         }
     }

@@ -4,8 +4,14 @@ public struct LockView: View {
     @ObservedObject var lockService = BiometricLockService.shared
     @State private var pinInput: String = ""
     @State private var errorText: String? = nil
+    @State private var cooldownRemaining: Int = 0
+    @State private var cooldownTimer: Timer? = nil
     
     public init() {}
+    
+    private var targetPinLength: Int {
+        min(6, max(4, lockService.pinLength))
+    }
     
     public var body: some View {
         ZStack {
@@ -30,14 +36,16 @@ public struct LockView: View {
                         .font(.system(size: 22, weight: .bold))
                         .foregroundColor(AppTheme.textPrimary)
                     
-                    Text("Devam etmek için PIN kodunuzu girin")
+                    Text(cooldownRemaining > 0
+                         ? "Çok fazla hatalı deneme. \(cooldownRemaining) sn bekleyin."
+                         : "Devam etmek için \(targetPinLength) haneli PIN kodunuzu girin")
                         .font(.system(size: 13))
-                        .foregroundColor(AppTheme.textSecondary)
+                        .foregroundColor(cooldownRemaining > 0 ? AppTheme.danger : AppTheme.textSecondary)
                 }
                 
-                // PIN Noktaları (Dots)
+                // PIN Noktaları (Dots - Dinamik 4..6 Hane)
                 HStack(spacing: 16) {
-                    ForEach(0..<4, id: \.self) { index in
+                    ForEach(0..<targetPinLength, id: \.self) { index in
                         Circle()
                             .fill(index < pinInput.count ? AppTheme.primary : AppTheme.cardSecondary)
                             .overlay(Circle().stroke(AppTheme.border, lineWidth: 1))
@@ -88,6 +96,8 @@ public struct LockView: View {
                                         }
                                     }
                                 }
+                                .disabled(cooldownRemaining > 0 && key != "faceid")
+                                .opacity(cooldownRemaining > 0 && key != "faceid" ? 0.45 : 1.0)
                             }
                         }
                     }
@@ -98,37 +108,71 @@ public struct LockView: View {
             .padding()
         }
         .onAppear {
+            syncCooldownTimer()
             if lockService.isBiometricsEnabled {
                 Task {
                     _ = await lockService.authenticateBiometrics()
                 }
             }
         }
+        .onDisappear {
+            cooldownTimer?.invalidate()
+            cooldownTimer = nil
+        }
+    }
+    
+    private func syncCooldownTimer() {
+        cooldownRemaining = lockService.remainingCooldownSeconds
+        cooldownTimer?.invalidate()
+        guard cooldownRemaining > 0 else { return }
+        cooldownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            Task { @MainActor in
+                let rem = lockService.remainingCooldownSeconds
+                cooldownRemaining = rem
+                if rem <= 0 {
+                    errorText = nil
+                    cooldownTimer?.invalidate()
+                    cooldownTimer = nil
+                }
+            }
+        }
     }
     
     private func handleKey(_ key: String) {
+        if key == "faceid" {
+            Task {
+                _ = await lockService.authenticateBiometrics()
+            }
+            return
+        }
+        guard lockService.remainingCooldownSeconds == 0 else {
+            syncCooldownTimer()
+            return
+        }
         if key == "delete" {
             if !pinInput.isEmpty {
                 pinInput.removeLast()
                 errorText = nil
             }
-        } else if key == "faceid" {
-            Task {
-                _ = await lockService.authenticateBiometrics()
-            }
         } else {
-            if pinInput.count < 4 {
+            if pinInput.count < targetPinLength {
                 pinInput.append(key)
-                if pinInput.count == 4 {
+                if pinInput.count == targetPinLength {
                     if lockService.verifyPin(pinInput) {
-                        // Kilit açıldı
+                        errorText = nil
                     } else {
-                        errorText = "Hatalı PIN kodu!"
                         pinInput = ""
+                        let rem = lockService.remainingCooldownSeconds
+                        if rem > 0 {
+                            errorText = "5 hatalı giriş! \(rem) saniye kilitlendi."
+                            syncCooldownTimer()
+                        } else {
+                            let left = max(1, 5 - lockService.failedAttempts)
+                            errorText = "Hatalı PIN kodu! (\(left) hak kaldı)"
+                        }
                     }
                 }
             }
         }
     }
 }
-
